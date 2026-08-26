@@ -159,10 +159,18 @@ def main():
 
     ws0 = wb["说明"]
     ws0["A2"] = "本次运行信息"
-    info = "运行时间：%s ~ %s\n主机：%s | 平台：%s\n渠道数：%d | 输出目录：%s\n数据来源：runner.py 原始结果，已回填至本报告。" % (
+    env = summary.get("environment") or {}
+    info = (
+        "运行时间：%s ~ %s\n"
+        "环境标注：%s\n"
+        "主机：%s | OS：%s | 架构：%s\n"
+        "CPU：%s 核 | 内存：%s GB | Python：%s | 时区：%s\n"
+        "渠道数：%d | 输出目录：%s\n"
+        "数据来源：runner.py 原始结果，已回填至本报告。"
+    ) % (
         summary.get("started_at", ""), summary.get("finished_at", ""),
-        (summary.get("environment") or {}).get("hostname", ""),
-        (summary.get("environment") or {}).get("platform", ""),
+        env.get("env_tag", ""), env.get("hostname", ""), env.get("os", ""), env.get("machine", ""),
+        env.get("cpu_cores", ""), env.get("memory_gb", ""), env.get("python", ""), env.get("tz", ""),
         len(providers), os.path.abspath(args.out))
     ws0.cell(row=3, column=2, value=info).alignment = Alignment(vertical="top", wrap_text=True)
 

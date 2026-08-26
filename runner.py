@@ -87,10 +87,50 @@ def dist_stats(values):
             "max": round(max(values), 2), "std": round(std, 2)}
 
 
-def env_info():
-    return {"hostname": socket.gethostname(), "platform": platform.platform(),
-            "python": platform.python_version(), "tz": time.strftime("%Z %z"),
-            "note": "所有渠道在同一台机器上顺序执行，保证网络与算力环境一致"}
+def total_memory_gb():
+    try:
+        import psutil
+        return round(psutil.virtual_memory().total / (1024 ** 3), 1)
+    except Exception:
+        pass
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return round(int(line.split()[1]) / (1024 ** 2), 1)
+    except Exception:
+        pass
+    try:  # Windows 兜底
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        st = MEMORYSTATUSEX()
+        st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
+        return round(st.ullTotalPhys / (1024 ** 3), 1)
+    except Exception:
+        pass
+    return None
+
+
+def env_info(env_tag=""):
+    return {
+        "hostname": socket.gethostname(),
+        "os": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "cpu_cores": os.cpu_count(),
+        "memory_gb": total_memory_gb(),
+        "python": platform.python_version(),
+        "tz": time.strftime("%Z %z"),
+        "env_tag": env_tag or "(未标注)",
+        "note": "所有渠道在同一台机器上顺序执行，保证网络与算力环境一致",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -671,11 +711,19 @@ def compute_scores(agg_by_provider, weights):
 # Markdown 汇总表
 # ---------------------------------------------------------------------------
 
-def render_markdown(agg_by_provider, scores, providers):
+def render_markdown(agg_by_provider, scores, providers, env=None):
     lines = ["# 多渠道模型测试汇总对比\n"]
     w = scores[providers[0]["id"]]["weights"]
     lines.append("> 总评分 = 性能×%.1f + 兼容×%.1f + 质量×%.1f + 长上下文×%.1f（各项满分 100）。\n"
                  % (w["performance"], w["compatibility"], w["quality"], w["long_context"]))
+
+    if env:
+        lines.append("\n## 0. 测试环境\n")
+        lines.append("| 项目 | 值 |")
+        lines.append("|---|---|")
+        for k, v in env.items():
+            lines.append("| %s | %s |" % (k, v))
+        lines.append("")
 
     lines.append("\n## 1. 性能基准层\n")
     lines.append("| 模型@渠道 | 用例 | 成功 | 错误 | TTFT均值(ms) | TTFT P50 | TTFT P95 | 速度(tok/s) | E2E均值(ms) | 推理tokens | 缓存tokens |")
@@ -859,10 +907,10 @@ def render_sample_table(rows):
             print("  [%s @ %s] %s" % (mid, chn, (out or "(空)")[:80].replace("\n", " ")))
 
 
-def run_sample(providers, cfg, out_dir, sample_case):
+def run_sample(providers, cfg, out_dir, sample_case, env_tag=""):
     print("[示例模式] 复用性能层第 1 条「短输入短输出」用例（%s），每个「模型×渠道」组合只跑 1 次，共 %d 次请求" % (
         sample_case["id"], len(providers)))
-    env = env_info()
+    env = env_info(env_tag)
     rows = []
     for p in providers:
         log("sample -> %s @ %s" % (p["model_id"], p["channel_name"]))
@@ -912,6 +960,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--no-timeline", action="store_true", help="原始 JSON 不保存逐 chunk 时间线")
+    ap.add_argument("--env-tag", default="", help="测试环境标注，写入报告（如：本地笔记本 / EC2 g5.xlarge）")
     args = ap.parse_args()
 
     cfg, cases, providers = load_config(args)
@@ -937,7 +986,7 @@ def main():
 
     # 示例模式：复用性能层第 1 条用例，每个组合只跑 1 次，跑完即返回
     if args.sample:
-        run_sample(providers, cfg, args.out, load_sample_case(args.cases_dir))
+        run_sample(providers, cfg, args.out, load_sample_case(args.cases_dir), args.env_tag)
         return
 
     if args.list_cases:
@@ -954,7 +1003,7 @@ def main():
     print("渠道：%d 个 | 用例：%d 条 | 预计请求：%d 次%s" % (
         len(providers), len(cases), total_requests, "" if once else "（含 temperature=0 双跑）"))
 
-    env = env_info()
+    env = env_info(args.env_tag)
     raw_dir = os.path.join(args.out, "raw")
     os.makedirs(raw_dir, exist_ok=True)
 
@@ -1026,7 +1075,7 @@ def main():
     with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    md = render_markdown(agg, scores, providers)
+    md = render_markdown(agg, scores, providers, env)
     with open(os.path.join(args.out, "summary_table.md"), "w", encoding="utf-8") as f:
         f.write(md)
     print("\n" + md)

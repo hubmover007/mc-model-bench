@@ -1,7 +1,7 @@
 {
   "version": 2,
   "environment": {
-    "note": "所有渠道必须在同一台机器（同一 AWS 实例）上、同一时间段内顺序执行，保证网络、算力、环境一致；runner 会把本机环境信息写入结果文件作为证据。"
+    "note": "所有渠道必须在同一台机器上顺序执行，保证网络、算力、环境一致；runner 会把本机环境信息（hostname/OS/CPU/内存/环境标注）写入结果与报告。"
   },
   "shared_request_params": {
     "temperature": 0.0,
@@ -22,44 +22,44 @@
   },
   "channels": [
     {
-      "id": "channel_a",
-      "name": "渠道A",
-      "base_url": "https://api.channel-a.example.com/v1",
-      "api_key_env": "CHANNEL_A_API_KEY",
+      "id": "easyrouter",
+      "name": "EasyRouter",
+      "base_url": "https://easyrouter.io/v1",
+      "api_key_env": "EASYROUTER_API_KEY",
       "api_key": "",
       "supports": {"stream_usage": true},
-      "notes": "示例：请替换为真实 base_url"
+      "notes": ""
     },
     {
-      "id": "channel_b",
-      "name": "渠道B",
-      "base_url": "https://api.channel-b.example.com/v1",
-      "api_key_env": "CHANNEL_B_API_KEY",
+      "id": "mayi",
+      "name": "Mayi",
+      "base_url": "https://maas-api-ga.computrix.ai/v1",
+      "api_key_env": "MAYI_API_KEY",
       "api_key": "",
       "supports": {"stream_usage": true},
-      "notes": "示例：请替换为真实 base_url"
+      "notes": ""
     }
   ],
   "models": [
     {
       "id": "deepseek-v4-pro",
-      "aliases": {"channel_a": "deepseek-v4-pro", "channel_b": "deepseek-v4-pro"},
+      "aliases": {"easyrouter": "deepseek-v4-pro", "mayi": "deepseek-v4-pro"},
       "reasoning": false,
       "context": 128000,
       "supports": {"temperature": true, "tools": true, "json_mode": true},
-      "notes": ""
+      "notes": "模型实际调用名请按渠道核对"
     },
     {
       "id": "glm5.2",
-      "aliases": {"channel_a": "glm-5.2", "channel_b": "glm-5.2"},
+      "aliases": {"easyrouter": "glm-5.2", "mayi": "glm-5.2"},
       "reasoning": false,
       "context": 128000,
       "supports": {"temperature": true, "tools": true, "json_mode": true},
-      "notes": ""
+      "notes": "模型实际调用名请按渠道核对"
     },
     {
       "id": "kimi-k3",
-      "aliases": {"channel_a": "kimi-k3", "channel_b": "kimi-k3"},
+      "aliases": {"easyrouter": "kimi-k3", "mayi": "kimi-k3"},
       "reasoning": true,
       "context": 128000,
       "supports": {"temperature": false, "tools": true, "json_mode": true},

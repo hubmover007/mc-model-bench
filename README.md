@@ -36,19 +36,19 @@ pip install -r requirements.txt
 
 # 1. 配置渠道 + 模型 + api key（只改 base_url / api_key / model 三项）
 #    config/providers.json：channels 写渠道，models 写模型（aliases 映射各渠道实际调用名）
-export CHANNEL_A_API_KEY=sk-...     # Windows: $env:CHANNEL_A_API_KEY="sk-..."
-export CHANNEL_B_API_KEY=sk-...
+export EASYROUTER_API_KEY=sk-...     # Windows: $env:EASYROUTER_API_KEY="sk-..."
+export MAYI_API_KEY=sk-...
 
 # 2. 下载抽取 HuggingFace 质量层用例（可选，离线用自带样例）
 python download_datasets.py --datasets gsm8k,truthfulqa --limit 50
 
-# 3. 执行
-python runner.py --sample           # 示例模式：复用性能层第1条「短输入短输出」用例，每个组合只跑1次（3模型×2渠道=6次）
-python runner.py --list-cases       # 查看用例
-python runner.py --dry-run          # 只看请求计划
-python runner.py --once             # 单次模式：全量用例每条只跑 1 次、不重试，快速看一轮
-python runner.py                    # 全量执行（用例固定顺序依次发给所有组合）
-python runner.py --models kimi-k3 --channels channel_a --layers performance,quality
+# 3. 执行（--env-tag 标注测试环境并写入报告，本地/EC2 各跑一次即可区分）
+python runner.py --sample --env-tag "本地笔记本"     # 示例模式：复用性能层第1条，每个组合只跑1次（6次）
+python runner.py --list-cases                       # 查看用例
+python runner.py --dry-run                          # 只看请求计划
+python runner.py --once --env-tag "本地笔记本"       # 单次模式：全量用例每条只跑 1 次、不重试
+python runner.py --env-tag "EC2 g5.xlarge"          # 全量执行（在 EC2 上跑时标注 EC2 环境）
+python runner.py --models kimi-k3 --channels easyrouter --layers performance,quality
 
 # 4. 生成报告
 python export_report.py --out output --result 测试报告.xlsx
