@@ -11,7 +11,10 @@ TTFT / chunk 分布 / 生成速度 / 端到端延迟 / usage（含 reasoning_tok
 
 ```
 mc-model-bench/
-├── config/providers.json        # 渠道 + 模型配置（channels × models 分离，只换 base_url/api_key/model）
+├── config/
+│   ├── providers-template.json   # 配置模板（channels × models，复制为 providers.json 后填写真实 key）
+│   └── providers.json            # 本地真实配置（含 api key，gitignore，不入库）
+│   └── providers.mock.json       # 本地 mock 自检配置
 ├── test_cases/
 │   ├── performance.json         # 性能基准层（12 条，四象限）
 │   ├── compatibility.json       # 功能兼容层（11 条）
@@ -34,8 +37,9 @@ mc-model-bench/
 ```bash
 pip install -r requirements.txt
 
-# 1. 配置渠道 + 模型 + api key（只改 base_url / api_key / model 三项）
-#    config/providers.json：channels 写渠道，models 写模型（aliases 映射各渠道实际调用名）
+# 1. 复制配置模板为本地配置（模板入库，真实 providers.json 不入库）
+#    cp config/providers-template.json config/providers.json
+#    channels 写渠道，models 写模型（aliases 映射各渠道实际调用名）
 export EASYROUTER_API_KEY=sk-...     # Windows: $env:EASYROUTER_API_KEY="sk-..."
 export MAYI_API_KEY=sk-...
 
@@ -50,8 +54,12 @@ python runner.py --once --env-tag "本地笔记本"       # 单次模式：全�
 python runner.py --env-tag "EC2 g5.xlarge"          # 全量执行（在 EC2 上跑时标注 EC2 环境）
 python runner.py --models kimi-k3 --channels easyrouter --layers performance,quality
 
-# 4. 生成报告
+# 4. 生成报告（自动定位 output/ 下最新一次完整运行目录 run_<时间戳>/）
 python export_report.py --out output --result 测试报告.xlsx
+
+# 每次运行结果都会写入带时间戳的子目录（不会覆盖历史）：
+#   output/run_20260826_172743/{raw/, order.json, summary.json, summary_table.md}
+#   需要直接写到固定目录可用 --no-ts；--sample 结果写 output/run_<ts>/sample_summary.json
 
 # 5. 本地自检（不消耗真实额度）
 python mock_server.py 18080

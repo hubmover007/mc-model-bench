@@ -9,3 +9,6 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# 本地真实配置（含 api key，不入库；模板见 config/providers-template.json）
+config/providers.json

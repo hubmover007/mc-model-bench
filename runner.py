@@ -5,7 +5,7 @@
 ================================================================
 
 与旧版单文件脚本 kimi_k3_easyrouter_vs_mayi.py 相比的核心改进：
-  1. 配置外置（config/providers.json），只换 base_url / api_key / model，其余参数全渠道共用；
+  1. 配置外置（config/providers.json，模板 config/providers-template.json），只换 base_url / api_key / model，其余参数全渠道共用；
   2. 测试用例独立成 JSON（test_cases/*.json），并支持从 HuggingFace 下载抽取（download_datasets.py）；
   3. 统一请求构造函数 build_request_body，长输入用「用例ID」种子确定性生成，prompt 全渠道一致；
   4. 用例按固定顺序逐条依次发给所有渠道，发送时间戳写入 order.json；
@@ -553,8 +553,7 @@ def run_case(provider, case, cfg, order_index, once=False):
     url = provider["base_url"].rstrip("/") + "/chat/completions"
     key = resolve_api_key(provider)
     if not key:
-        print("[警告] 渠道 %s 未配置 api_key（api_key_env=%s 未设置），请求可能 401" % (
-            provider["name"], provider.get("api_key_env") or "(无)"))
+        print("[警告] 渠道 %s 未配置 api_key，请求可能 401（请在 config 该渠道的 api_key 字段填 key，或设置对应环境变量）" % provider["name"])
     headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
     timeouts = cfg.get("timeouts", {})
     read_timeout = timeouts.get("read_seconds_long_context", 600) if need else timeouts.get("read_seconds", 180)
@@ -853,6 +852,8 @@ def load_sample_case(cases_dir):
 
 
 def load_config(args):
+    if not os.path.exists(args.providers_file):
+        sys.exit("配置文件不存在：%s\n请先复制 config/providers-template.json 为 config/providers.json，并填写 api key / 模型调用名。" % args.providers_file)
     with open(args.providers_file, encoding="utf-8") as f:
         cfg = json.load(f)
     # 兼容旧格式（providers 直接是组合）与新版（channels + models）
@@ -933,6 +934,7 @@ def run_sample(providers, cfg, out_dir, sample_case, env_tag=""):
     summary = {
         "mode": "sample", "sample_case": sample_case,
         "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "environment": env,
         "rows": [{
             "model_id": r["meta"]["model_id"], "channel_id": r["meta"]["channel_id"],
             "channel_name": r["meta"]["channel_name"], "base_url": r["meta"]["base_url"],
@@ -943,6 +945,15 @@ def run_sample(providers, cfg, out_dir, sample_case, env_tag=""):
     with open(os.path.join(out_dir, "sample_summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
     print("\n示例结果已写入：%s" % os.path.join(os.path.abspath(out_dir), "sample_summary.json"))
+
+    # 自动生成示例 Excel 报告
+    try:
+        from export_report import generate_sample_report
+        rp = generate_sample_report(out_dir)
+        if rp:
+            print("示例报告已生成：%s" % os.path.abspath(rp))
+    except Exception as e:
+        print("[提示] 自动生成示例 Excel 失败：%s" % e)
 
 
 def main():
@@ -961,6 +972,7 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--no-timeline", action="store_true", help="原始 JSON 不保存逐 chunk 时间线")
     ap.add_argument("--env-tag", default="", help="测试环境标注，写入报告（如：本地笔记本 / EC2 g5.xlarge）")
+    ap.add_argument("--no-ts", action="store_true", help="结果直接写到 --out 目录（不加时间戳子目录，会覆盖历史）")
     args = ap.parse_args()
 
     cfg, cases, providers = load_config(args)
@@ -984,9 +996,16 @@ def main():
         cfg["retries"] = 0  # 单次模式不重试
         print("[单次模式] 每条用例只执行 1 次、不做重试，快速预览结果")
 
+    # 每次运行结果写入带时间戳的子目录，避免覆盖历史结果（--no-ts 可关闭）
+    run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = args.out if args.no_ts else os.path.join(args.out, "run_" + run_id)
+    if not args.dry_run:
+        os.makedirs(out_dir, exist_ok=True)
+        print("本次结果输出目录：%s" % os.path.abspath(out_dir))
+
     # 示例模式：复用性能层第 1 条用例，每个组合只跑 1 次，跑完即返回
     if args.sample:
-        run_sample(providers, cfg, args.out, load_sample_case(args.cases_dir), args.env_tag)
+        run_sample(providers, cfg, out_dir, load_sample_case(args.cases_dir), args.env_tag)
         return
 
     if args.list_cases:
@@ -1004,7 +1023,7 @@ def main():
         len(providers), len(cases), total_requests, "" if once else "（含 temperature=0 双跑）"))
 
     env = env_info(args.env_tag)
-    raw_dir = os.path.join(args.out, "raw")
+    raw_dir = os.path.join(out_dir, "raw")
     os.makedirs(raw_dir, exist_ok=True)
 
     rows, order_log, order_index, interrupted = [], [], 0, False
@@ -1061,7 +1080,7 @@ def main():
     if args.dry_run:
         return
 
-    with open(os.path.join(args.out, "order.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, "order.json"), "w", encoding="utf-8") as f:
         json.dump({"started_at": started_wall, "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                    "order": order_log}, f, ensure_ascii=False, indent=2)
 
@@ -1072,14 +1091,23 @@ def main():
                "score_weights": cfg.get("score_weights", {}), "shared_request_params": cfg.get("shared_request_params", {}),
                "providers": [{k: v for k, v in p.items() if k != "api_key"} for p in providers],
                "aggregate": agg, "scores": scores}
-    with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
     md = render_markdown(agg, scores, providers, env)
-    with open(os.path.join(args.out, "summary_table.md"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, "summary_table.md"), "w", encoding="utf-8") as f:
         f.write(md)
     print("\n" + md)
-    print("\n结果已写入：%s" % os.path.abspath(args.out))
+    print("\n结果已写入：%s" % os.path.abspath(out_dir))
+
+    # 自动生成 Excel 报告（与 export_report.py 同一套逻辑）
+    try:
+        from export_report import generate_report
+        template = os.path.join(HERE, "report_template.xlsx")
+        rp = generate_report(out_dir, template, os.path.join(out_dir, "report.xlsx"))
+        print("报告已生成：%s" % os.path.abspath(rp))
+    except Exception as e:
+        print("[提示] 自动生成 Excel 报告失败：%s（可手动运行 python export_report.py --out %s）" % (e, os.path.abspath(out_dir)))
 
 
 if __name__ == "__main__":

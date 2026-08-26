@@ -43,11 +43,11 @@
   "models": [
     {
       "id": "deepseek-v4-pro",
-      "aliases": {"easyrouter": "deepseek-v4-pro", "mayi": "deepseek-v4-pro"},
+      "aliases": {"easyrouter": "deepseek-v4-pro", "mayi": "deepseek-v4-pro-0813"},
       "reasoning": false,
       "context": 128000,
       "supports": {"temperature": true, "tools": true, "json_mode": true},
-      "notes": "模型实际调用名请按渠道核对"
+      "notes": ""
     },
     {
       "id": "glm5.2",

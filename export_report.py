@@ -15,7 +15,8 @@ import json
 import os
 
 import openpyxl
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -116,23 +117,30 @@ def fill_sheet(ws, rows, num_fmts):
                 cell.number_format = num_fmts[c - 1]
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=os.path.join(HERE, "output"))
-    ap.add_argument("--template", default=os.path.join(HERE, "report_template.xlsx"))
-    ap.add_argument("--result", default="")
-    args = ap.parse_args()
+def resolve_run_dir(out):
+    """若 out 直接含 summary.json 则原样返回；否则定位其下最新的完整运行目录（含 summary.json）。"""
+    if os.path.exists(os.path.join(out, "summary.json")):
+        return out
+    subs = sorted(d for d in os.listdir(out)
+                  if d.startswith("run_") and os.path.isdir(os.path.join(out, d)))
+    for d in reversed(subs):  # 跳过仅 --sample 的目录
+        if os.path.exists(os.path.join(out, d, "summary.json")):
+            return os.path.join(out, d)
+    return os.path.join(out, subs[-1]) if subs else out
 
-    summary_path = os.path.join(args.out, "summary.json")
+
+def generate_report(out_dir, template_path, result_path):
+    """把一次完整运行的原始数据回填到报告模板，生成 Excel。返回生成的文件路径。"""
+    summary_path = os.path.join(out_dir, "summary.json")
     if not os.path.exists(summary_path):
-        raise SystemExit("未找到 %s，请先运行 runner.py" % summary_path)
+        raise FileNotFoundError("未找到 %s" % summary_path)
     with open(summary_path, encoding="utf-8") as f:
         summary = json.load(f)
 
-    rows = load_raw_rows(os.path.join(args.out, "raw"))
+    rows = load_raw_rows(os.path.join(out_dir, "raw"))
     perf, compat, quality, lc, perf_ttft = build_detail_rows(rows)
 
-    wb = openpyxl.load_workbook(args.template)
+    wb = openpyxl.load_workbook(template_path)
     fill_sheet(wb["性能明细"], perf, [None, None, None, "0.0", "0.0", "0.0", "0.0", "0", "0.00", "0", "0", "0", "0.0", "0.0", None, None])
     fill_sheet(wb["兼容性明细"], compat, [None, None, None, None, None, "0", None])
     fill_sheet(wb["质量明细"], quality, [None, None, None, None, None, None, None, None])
@@ -171,11 +179,59 @@ def main():
         summary.get("started_at", ""), summary.get("finished_at", ""),
         env.get("env_tag", ""), env.get("hostname", ""), env.get("os", ""), env.get("machine", ""),
         env.get("cpu_cores", ""), env.get("memory_gb", ""), env.get("python", ""), env.get("tz", ""),
-        len(providers), os.path.abspath(args.out))
+        len(providers), os.path.abspath(out_dir))
     ws0.cell(row=3, column=2, value=info).alignment = Alignment(vertical="top", wrap_text=True)
 
-    result_path = args.result or os.path.join(HERE, "report_%s.xlsx" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
     wb.save(result_path)
+    return result_path
+
+
+def generate_sample_report(out_dir):
+    """为 --sample 运行生成一张简单对比 Excel。"""
+    sample_path = os.path.join(out_dir, "sample_summary.json")
+    if not os.path.exists(sample_path):
+        return None
+    with open(sample_path, encoding="utf-8") as f:
+        s = json.load(f)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "示例结果"
+    headers = ["模型", "渠道", "TTFT(ms)", "E2E(ms)", "速度(tok/s)", "内容字数", "推理字数", "状态", "输出预览"]
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=c, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for i, w in enumerate([18, 12, 10, 10, 12, 9, 9, 10, 50], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    r = 2
+    for row in s.get("rows", []):
+        m = row.get("metrics") or {}
+        status = "错误" if row.get("error") else ("跳过" if row.get("skipped") else "成功")
+        for c, v in enumerate([row.get("model_id"), row.get("channel_name"), m.get("ttft_ms"),
+                               m.get("e2e_ms"), m.get("tokens_per_sec"), m.get("content_chars"),
+                               m.get("reasoning_chars"), status, row.get("output_preview", "")], 1):
+            ws.cell(row=r, column=c, value=v)
+        r += 1
+    env = s.get("environment") or {}
+    ws.cell(row=r + 1, column=1, value="环境标注：%s | 主机：%s | OS：%s" % (
+        env.get("env_tag", ""), env.get("hostname", ""), env.get("os", "")))
+    result_path = os.path.join(out_dir, "sample_report.xlsx")
+    wb.save(result_path)
+    return result_path
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default=os.path.join(HERE, "output"))
+    ap.add_argument("--template", default=os.path.join(HERE, "report_template.xlsx"))
+    ap.add_argument("--result", default="")
+    args = ap.parse_args()
+
+    out_dir = resolve_run_dir(args.out)
+    result_path = args.result or os.path.join(HERE, "report_%s.xlsx" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+    generate_report(out_dir, args.template, result_path)
     print("已生成报告：%s" % os.path.abspath(result_path))
 
 
