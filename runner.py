@@ -215,7 +215,13 @@ def build_request_body(provider, case, shared_params, reasoning_max_tokens):
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
 
-    for key in ("top_p", "stop", "response_format", "tools", "tool_choice", "seed", "n", "logprobs"):
+    # top_p 默认不传（部分模型如 kimi-k3 只接受特定值，统一不传最稳）；仅当用例或模型显式配置时才传
+    if "top_p" in case:
+        body["top_p"] = case["top_p"]
+    elif provider.get("top_p") is not None:
+        body["top_p"] = provider["top_p"]
+
+    for key in ("stop", "response_format", "tools", "tool_choice", "seed", "n", "logprobs"):
         if key in case:
             body[key] = case[key]
         elif key in shared_params:

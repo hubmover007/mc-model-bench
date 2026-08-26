@@ -1,7 +1,7 @@
 {
   "version": 2,
   "environment": {"note": "本地 mock 验证用配置（不消耗真实额度）"},
-  "shared_request_params": {"temperature": 0.0, "top_p": 1.0},
+  "shared_request_params": {"temperature": 0.0},
   "reasoning_max_tokens": 4096,
   "timeouts": {"connect_seconds": 5, "read_seconds": 60, "read_seconds_long_context": 120},
   "retries": 1,

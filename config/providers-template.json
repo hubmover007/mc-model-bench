@@ -4,8 +4,7 @@
     "note": "所有渠道必须在同一台机器上顺序执行，保证网络、算力、环境一致；runner 会把本机环境信息（hostname/OS/CPU/内存/环境标注）写入结果与报告。"
   },
   "shared_request_params": {
-    "temperature": 0.0,
-    "top_p": 1.0
+    "temperature": 0.0
   },
   "reasoning_max_tokens": 4096,
   "timeouts": {
