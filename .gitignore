@@ -3,6 +3,7 @@ output/
 output_mock/
 datasets/
 report_*.xlsx
+!report_template.xlsx
 __pycache__/
 *.pyc
 .venv/
