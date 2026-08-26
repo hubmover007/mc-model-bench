@@ -182,6 +182,8 @@ def generate_report(out_dir, template_path, result_path):
         len(providers), os.path.abspath(out_dir))
     ws0.cell(row=3, column=2, value=info).alignment = Alignment(vertical="top", wrap_text=True)
 
+    fill_experiment_config(wb, summary)
+
     wb.save(result_path)
     return result_path
 
@@ -220,6 +222,54 @@ def generate_sample_report(out_dir):
     result_path = os.path.join(out_dir, "sample_report.xlsx")
     wb.save(result_path)
     return result_path
+
+
+def fill_experiment_config(wb, summary):
+    """把测试参数/渠道/模型/用例设计写成一个「实验配置」sheet。"""
+    tc = summary.get("test_config") or {}
+    ws = wb["实验配置"] if "实验配置" in wb.sheetnames else wb.create_sheet("实验配置")
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.value = None
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 78
+    ws["A1"] = "实验配置（测试参数 + 渠道/模型 + 用例设计）"
+    ws["A1"].font = Font(bold=True, size=14)
+    r = 3
+
+    def sec(title, pairs):
+        nonlocal r
+        ws.cell(row=r, column=1, value=title).font = Font(bold=True, size=12)
+        r += 1
+        for k, v in pairs:
+            ws.cell(row=r, column=1, value=k)
+            c = ws.cell(row=r, column=2, value=v)
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+            r += 1
+        r += 1
+
+    sp = tc.get("shared_request_params") or {}
+    to = tc.get("timeouts") or {}
+    w = tc.get("score_weights") or {}
+    sec("1. 共享请求参数", [
+        ("temperature", sp.get("temperature", "不传")),
+        ("top_p", sp.get("top_p", tc.get("top_p_note", "默认不传"))),
+    ])
+    sec("2. 推理 / 超时 / 重试", [
+        ("reasoning_max_tokens（推理模型下限）", tc.get("reasoning_max_tokens")),
+        ("超时（连接/读/长上下文）", "%ss / %ss / %ss" % (
+            to.get("connect_seconds", 10), to.get("read_seconds", 180), to.get("read_seconds_long_context", 600))),
+        ("失败重试次数", tc.get("retries")),
+    ])
+    sec("3. 评分权重", [(k, v) for k, v in w.items()])
+    sec("4. 渠道", [(ch.get("name", ch.get("id")), ch.get("base_url")) for ch in tc.get("channels", [])])
+    sec("5. 模型", [(m.get("id"), "aliases=%s | 推理模型=%s | 标称上下文=%s | supports=%s" % (
+        json.dumps(m.get("aliases", {}), ensure_ascii=False),
+        "是" if m.get("reasoning") else "否", m.get("context"),
+        json.dumps(m.get("supports", {}), ensure_ascii=False))) for m in tc.get("models", [])])
+    sec("6. 用例设计", [(layer, "%d 条 | %s" % (info.get("count", 0), info.get("desc", "")))
+                        for layer, info in tc.get("layers", {}).items()])
+    sec("7. 运行环境", [(k, v) for k, v in (summary.get("environment") or {}).items()])
 
 
 def main():

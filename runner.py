@@ -44,6 +44,14 @@ except ImportError:
 
 LAYERS = ("performance", "compatibility", "quality", "long_context")
 
+# 各测试层的用途说明（写入报告，便于理解实验设计）
+LAYER_DESC = {
+    "performance": "性能基准层：短/长输入 × 短/长输出 四象限，测 TTFT、生成速度、端到端延迟、chunk 分布",
+    "compatibility": "功能兼容层：SSE 格式 / stop / max_tokens / temperature / Function Calling / JSON mode / 多轮 / system 提示词",
+    "quality": "质量层：数学推理(GSM8K) + 幻觉事实性(TruthfulQA)，judge 判分正确率",
+    "long_context": "长上下文专项：大海捞针 10K/32K/64K/128K，输入按 target_tokens 生成，输出 max_tokens=2048",
+}
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PROVIDERS_FILE = os.path.join(HERE, "config", "providers.json")
 DEFAULT_CASES_DIR = os.path.join(HERE, "test_cases")
@@ -716,7 +724,28 @@ def compute_scores(agg_by_provider, weights):
 # Markdown 汇总表
 # ---------------------------------------------------------------------------
 
-def render_markdown(agg_by_provider, scores, providers, env=None):
+def build_test_config(cfg, cases):
+    """汇总本次实验的参数配置（共享参数/推理/超时/重试/权重/渠道/模型/用例设计），写入报告。"""
+    layers = {}
+    for c in cases:
+        layers[c["layer"]] = layers.get(c["layer"], 0) + 1
+    return {
+        "shared_request_params": cfg.get("shared_request_params", {}),
+        "top_p_note": "默认不传（仅用例或模型显式配置时才传）",
+        "reasoning_max_tokens": cfg.get("reasoning_max_tokens", 4096),
+        "timeouts": cfg.get("timeouts", {}),
+        "retries": cfg.get("retries", 0),
+        "score_weights": cfg.get("score_weights", {}),
+        "channels": [{"id": ch["id"], "name": ch.get("name", ch["id"]), "base_url": ch.get("base_url", "")}
+                     for ch in cfg.get("channels", [])],
+        "models": [{"id": m["id"], "aliases": m.get("aliases", {}), "reasoning": bool(m.get("reasoning")),
+                    "context": m.get("context"), "supports": m.get("supports", {})}
+                   for m in cfg.get("models", [])],
+        "layers": {k: {"count": v, "desc": LAYER_DESC.get(k, "")} for k, v in layers.items()},
+    }
+
+
+def render_markdown(agg_by_provider, scores, providers, env=None, test_config=None):
     lines = ["# 多渠道模型测试汇总对比\n"]
     w = scores[providers[0]["id"]]["weights"]
     lines.append("> 总评分 = 性能×%.1f + 兼容×%.1f + 质量×%.1f + 长上下文×%.1f（各项满分 100）。\n"
@@ -730,7 +759,55 @@ def render_markdown(agg_by_provider, scores, providers, env=None):
             lines.append("| %s | %s |" % (k, v))
         lines.append("")
 
-    lines.append("\n## 1. 性能基准层\n")
+    if test_config:
+        tc = test_config
+        sp = tc.get("shared_request_params") or {}
+        to = tc.get("timeouts") or {}
+        w = tc.get("score_weights") or {}
+        lines.append("\n## 1. 测试参数配置\n")
+        lines.append("### 1.1 共享请求参数\n")
+        lines.append("| 参数 | 值 |")
+        lines.append("|---|---|")
+        lines.append("| temperature | %s |" % (sp.get("temperature", "不传")))
+        lines.append("| top_p | %s |" % (sp.get("top_p", tc.get("top_p_note", "不传"))))
+        lines.append("")
+        lines.append("### 1.2 推理 / 超时 / 重试\n")
+        lines.append("| 参数 | 值 |")
+        lines.append("|---|---|")
+        lines.append("| reasoning_max_tokens（推理模型下限） | %s |" % tc.get("reasoning_max_tokens"))
+        lines.append("| 连接超时 / 读超时 / 长上下文读超时 | %ss / %ss / %ss |" % (
+            to.get("connect_seconds", 10), to.get("read_seconds", 180), to.get("read_seconds_long_context", 600)))
+        lines.append("| 失败重试次数 | %s |" % tc.get("retries"))
+        lines.append("")
+        lines.append("### 1.3 评分权重\n")
+        lines.append("| 维度 | 权重 |")
+        lines.append("|---|---|")
+        for k, v in w.items():
+            lines.append("| %s | %s |" % (k, v))
+        lines.append("")
+        lines.append("### 1.4 渠道\n")
+        lines.append("| id | 名称 | base_url |")
+        lines.append("|---|---|---|")
+        for ch in tc.get("channels", []):
+            lines.append("| %s | %s | %s |" % (ch.get("id"), ch.get("name"), ch.get("base_url")))
+        lines.append("")
+        lines.append("### 1.5 模型\n")
+        lines.append("| id | 各渠道调用名(aliases) | 推理模型 | 标称上下文 | supports |")
+        lines.append("|---|---|---|---|---|")
+        for m in tc.get("models", []):
+            lines.append("| %s | %s | %s | %s | %s |" % (
+                m.get("id"), json.dumps(m.get("aliases", {}), ensure_ascii=False),
+                "是" if m.get("reasoning") else "否", m.get("context"),
+                json.dumps(m.get("supports", {}), ensure_ascii=False)))
+        lines.append("")
+        lines.append("## 2. 测试用例设计\n")
+        lines.append("| 层 | 用例数 | 目的 |")
+        lines.append("|---|---|---|")
+        for layer, info in test_config.get("layers", {}).items():
+            lines.append("| %s | %d | %s |" % (layer, info.get("count", 0), info.get("desc", "")))
+        lines.append("")
+
+    lines.append("\n## 3. 性能基准层\n")
     lines.append("| 模型@渠道 | 用例 | 成功 | 错误 | TTFT均值(ms) | TTFT P50 | TTFT P95 | 速度(tok/s) | E2E均值(ms) | 推理tokens | 缓存tokens |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for p in providers:
@@ -740,7 +817,7 @@ def render_markdown(agg_by_provider, scores, providers, env=None):
             agg_mean(a["ttft_ms"]), percentile(a["ttft_ms"], 0.5), percentile(a["ttft_ms"], 0.95),
             agg_mean(a["speed"]), agg_mean(a["e2e_ms"]), a["reasoning_tokens"], a["cached_tokens_sum"]))
 
-    lines.append("\n## 2. 功能兼容层（通过/总数）\n")
+    lines.append("\n## 4. 功能兼容层（通过/总数）\n")
     feats = []
     for p in providers:
         for feat in agg_by_provider[p["id"]]["compatibility"]["features"]:
@@ -757,7 +834,7 @@ def render_markdown(agg_by_provider, scores, providers, env=None):
             cells.append("%d/%d" % (f["passed"], f["total"]) if f["total"] else "-")
         lines.append("| %s | %s | %s |" % (p["name"], rate, " | ".join(cells)))
 
-    lines.append("\n## 3. 质量层（HuggingFace 数据，判分）\n")
+    lines.append("\n## 5. 质量层（HuggingFace 数据，判分）\n")
     cats = []
     for p in providers:
         for cat in agg_by_provider[p["id"]]["quality"]["by_category"]:
@@ -774,7 +851,7 @@ def render_markdown(agg_by_provider, scores, providers, env=None):
             cells.append("%d/%d" % (c["passed"], c["total"]) if c["total"] else "-")
         lines.append("| %s | %s | %s |" % (p["name"], rate, " | ".join(cells)))
 
-    lines.append("\n## 4. 长上下文专项（大海捞针）\n")
+    lines.append("\n## 6. 长上下文专项（大海捞针）\n")
     lc_cases = []
     for p in providers:
         for cid in agg_by_provider[p["id"]]["long_context"]["by_case"]:
@@ -788,7 +865,7 @@ def render_markdown(agg_by_provider, scores, providers, env=None):
         cells = [l["by_case"].get(cid, "-") for cid in lc_cases]
         lines.append("| %s | %s | %s |" % (p["name"], rate, " | ".join(cells)))
 
-    lines.append("\n## 5. 综合评分（满分 100）\n")
+    lines.append("\n## 7. 综合评分（满分 100）\n")
     lines.append("| 模型@渠道 | 性能 | 兼容 | 质量 | 长上下文 | 总评分 |")
     lines.append("|---|---|---|---|---|---|")
     for p in providers:
@@ -1092,15 +1169,17 @@ def main():
 
     agg = aggregate(rows, providers)
     scores = compute_scores(agg, cfg.get("score_weights", {}))
+    test_config = build_test_config(cfg, cases)
     summary = {"environment": env, "started_at": started_wall,
                "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "interrupted": interrupted,
                "score_weights": cfg.get("score_weights", {}), "shared_request_params": cfg.get("shared_request_params", {}),
+               "test_config": test_config,
                "providers": [{k: v for k, v in p.items() if k != "api_key"} for p in providers],
                "aggregate": agg, "scores": scores}
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    md = render_markdown(agg, scores, providers, env)
+    md = render_markdown(agg, scores, providers, env, test_config)
     with open(os.path.join(out_dir, "summary_table.md"), "w", encoding="utf-8") as f:
         f.write(md)
     print("\n" + md)
