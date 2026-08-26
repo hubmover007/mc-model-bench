@@ -49,7 +49,7 @@ LAYER_DESC = {
     "performance": "性能基准层：短/长输入 × 短/长输出 四象限，测 TTFT、生成速度、端到端延迟、chunk 分布",
     "compatibility": "功能兼容层：SSE 格式 / stop / max_tokens / temperature / Function Calling / JSON mode / 多轮 / system 提示词",
     "quality": "质量层：数学推理(GSM8K) + 幻觉事实性(TruthfulQA)，judge 判分正确率",
-    "long_context": "长上下文专项：大海捞针 10K/32K/64K/128K，输入按 target_tokens 生成，输出 max_tokens=2048",
+    "long_context": "长上下文专项：大海捞针 10K/32K/64K/128K，输入按 target_tokens 生成，输出 max_tokens=4096",
 }
 
 HERE = os.path.dirname(os.path.abspath(__file__))

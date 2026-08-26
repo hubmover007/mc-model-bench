@@ -6,7 +6,7 @@
   "shared_request_params": {
     "temperature": 0.0
   },
-  "reasoning_max_tokens": 4096,
+  "reasoning_max_tokens": 16384,
   "timeouts": {
     "connect_seconds": 10,
     "read_seconds": 180,
@@ -43,7 +43,7 @@
     {
       "id": "deepseek-v4-pro",
       "aliases": {"easyrouter": "deepseek-v4-pro", "mayi": "deepseek-v4-pro-0813"},
-      "reasoning": false,
+      "reasoning": true,
       "context": 128000,
       "supports": {"temperature": true, "tools": true, "json_mode": true},
       "notes": ""
@@ -51,7 +51,7 @@
     {
       "id": "glm5.2",
       "aliases": {"easyrouter": "glm-5.2", "mayi": "glm-5.2"},
-      "reasoning": false,
+      "reasoning": true,
       "context": 128000,
       "supports": {"temperature": true, "tools": true, "json_mode": true},
       "notes": "模型实际调用名请按渠道核对"

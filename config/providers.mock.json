@@ -2,7 +2,7 @@
   "version": 2,
   "environment": {"note": "本地 mock 验证用配置（不消耗真实额度）"},
   "shared_request_params": {"temperature": 0.0},
-  "reasoning_max_tokens": 4096,
+  "reasoning_max_tokens": 16384,
   "timeouts": {"connect_seconds": 5, "read_seconds": 60, "read_seconds_long_context": 120},
   "retries": 1,
   "score_weights": {"performance": 0.3, "compatibility": 0.3, "quality": 0.2, "long_context": 0.2},
@@ -14,9 +14,9 @@
   ],
   "models": [
     {"id": "deepseek-v4-pro", "aliases": {"mock_a": "deepseek-v4-pro", "mock_b": "deepseek-v4-pro"},
-     "reasoning": false, "context": 128000, "supports": {"temperature": true}, "notes": ""},
+     "reasoning": true, "context": 128000, "supports": {"temperature": true}, "notes": ""},
     {"id": "glm5.2", "aliases": {"mock_a": "glm-5.2", "mock_b": "glm-5.2"},
-     "reasoning": false, "context": 128000, "supports": {"temperature": true}, "notes": ""},
+     "reasoning": true, "context": 128000, "supports": {"temperature": true}, "notes": ""},
     {"id": "kimi-k3", "aliases": {"mock_a": "kimi-k3", "mock_b": "kimi-k3"},
      "reasoning": true, "context": 32000, "supports": {"temperature": false}, "notes": "推理模型，32K 上下文"}
   ]

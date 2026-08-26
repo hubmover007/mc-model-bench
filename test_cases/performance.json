@@ -6,11 +6,11 @@
   {"id": "perf_sis_03", "name": "短输入短输出-3", "category": "短输入短输出",
    "prompt": "把这句话翻译成英文：今天天气很好，我们出去散步吧。", "max_tokens": 100, "stream": true},
   {"id": "perf_sil_01", "name": "短输入长输出-1", "category": "短输入长输出",
-   "prompt": "请写一篇关于人工智能发展历史的科普文章，要求结构完整、条理清晰，包含至少 8 个自然段。", "max_tokens": 1500, "stream": true},
+   "prompt": "请写一篇关于人工智能发展历史的科普文章，要求结构完整、条理清晰，包含至少 8 个自然段。", "max_tokens": 2200, "stream": true},
   {"id": "perf_sil_02", "name": "短输入长输出-2", "category": "短输入长输出",
-   "prompt": "详细介绍 Transformer 中的自注意力机制，包括原理、公式推导思路和典型应用场景。", "max_tokens": 1800, "stream": true},
+   "prompt": "详细介绍 Transformer 中的自注意力机制，包括原理、公式推导思路和典型应用场景。", "max_tokens": 2500, "stream": true},
   {"id": "perf_sil_03", "name": "短输入长输出-3", "category": "短输入长输出",
-   "prompt": "写一份产品需求文档（PRD）模板，覆盖背景、目标、用户画像、功能需求、非功能需求、里程碑。", "max_tokens": 1500, "stream": true},
+   "prompt": "写一份产品需求文档（PRD）模板，覆盖背景、目标、用户画像、功能需求、非功能需求、里程碑。", "max_tokens": 2200, "stream": true},
   {"id": "perf_lis_01", "name": "长输入短输出-1", "category": "长输入短输出",
    "prompt": "以下是参考资料：\n\n{filler}\n\n请用不超过 50 字总结以上资料的核心观点。", "filler_tokens": 2500, "max_tokens": 100, "stream": true},
   {"id": "perf_lis_02", "name": "长输入短输出-2", "category": "长输入短输出",
@@ -18,9 +18,9 @@
   {"id": "perf_lis_03", "name": "长输入短输出-3", "category": "长输入短输出",
    "prompt": "{filler}\n\n请为以上资料拟一个合适的标题，不超过 20 字。", "filler_tokens": 4000, "max_tokens": 80, "stream": true},
   {"id": "perf_lil_01", "name": "长输入长输出-1", "category": "长输入长输出",
-   "prompt": "{filler}\n\n请基于以上资料撰写一篇约 800 字的详细摘要，要求覆盖资料中的主要观点和论据。", "filler_tokens": 2500, "max_tokens": 1200, "stream": true},
+   "prompt": "{filler}\n\n请基于以上资料撰写一篇约 800 字的详细摘要，要求覆盖资料中的主要观点和论据。", "filler_tokens": 2500, "max_tokens": 2200, "stream": true},
   {"id": "perf_lil_02", "name": "长输入长输出-2", "category": "长输入长输出",
-   "prompt": "{filler}\n\n请分析以上资料的写作风格，并模仿该风格续写一段约 300 字的内容。", "filler_tokens": 3000, "max_tokens": 1200, "stream": true},
+   "prompt": "{filler}\n\n请分析以上资料的写作风格，并模仿该风格续写一段约 300 字的内容。", "filler_tokens": 3000, "max_tokens": 2200, "stream": true},
   {"id": "perf_lil_03", "name": "长输入长输出-3", "category": "长输入长输出",
-   "prompt": "{filler}\n\n请将以上资料改写为一篇演讲稿，长度约 1200 字，语言要生动有感染力。", "filler_tokens": 4500, "max_tokens": 1500, "stream": true}
+   "prompt": "{filler}\n\n请将以上资料改写为一篇演讲稿，长度约 1200 字，语言要生动有感染力。", "filler_tokens": 4500, "max_tokens": 2200, "stream": true}
 ]
