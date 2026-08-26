@@ -678,7 +678,7 @@ def render_markdown(agg_by_provider, scores, providers):
                  % (w["performance"], w["compatibility"], w["quality"], w["long_context"]))
 
     lines.append("\n## 1. 性能基准层\n")
-    lines.append("| 渠道 | 用例 | 成功 | 错误 | TTFT均值(ms) | TTFT P50 | TTFT P95 | 速度(tok/s) | E2E均值(ms) | 推理tokens | 缓存tokens |")
+    lines.append("| 模型@渠道 | 用例 | 成功 | 错误 | TTFT均值(ms) | TTFT P50 | TTFT P95 | 速度(tok/s) | E2E均值(ms) | 推理tokens | 缓存tokens |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for p in providers:
         a = agg_by_provider[p["id"]]["performance"]
@@ -693,7 +693,7 @@ def render_markdown(agg_by_provider, scores, providers):
         for feat in agg_by_provider[p["id"]]["compatibility"]["features"]:
             if feat not in feats:
                 feats.append(feat)
-    lines.append("| 渠道 | 通过率 | " + " | ".join(feats) + " |")
+    lines.append("| 模型@渠道 | 通过率 | " + " | ".join(feats) + " |")
     lines.append("|" + "---|" * (len(feats) + 2))
     for p in providers:
         c = agg_by_provider[p["id"]]["compatibility"]
@@ -710,7 +710,7 @@ def render_markdown(agg_by_provider, scores, providers):
         for cat in agg_by_provider[p["id"]]["quality"]["by_category"]:
             if cat not in cats:
                 cats.append(cat)
-    lines.append("| 渠道 | 正确率 | " + " | ".join(cats) + " |")
+    lines.append("| 模型@渠道 | 正确率 | " + " | ".join(cats) + " |")
     lines.append("|" + "---|" * (len(cats) + 2))
     for p in providers:
         q = agg_by_provider[p["id"]]["quality"]
@@ -727,7 +727,7 @@ def render_markdown(agg_by_provider, scores, providers):
         for cid in agg_by_provider[p["id"]]["long_context"]["by_case"]:
             if cid not in lc_cases:
                 lc_cases.append(cid)
-    lines.append("| 渠道 | 检索率 | " + " | ".join(lc_cases) + " |")
+    lines.append("| 模型@渠道 | 检索率 | " + " | ".join(lc_cases) + " |")
     lines.append("|" + "---|" * (len(lc_cases) + 2))
     for p in providers:
         l = agg_by_provider[p["id"]]["long_context"]
@@ -736,7 +736,7 @@ def render_markdown(agg_by_provider, scores, providers):
         lines.append("| %s | %s | %s |" % (p["name"], rate, " | ".join(cells)))
 
     lines.append("\n## 5. 综合评分（满分 100）\n")
-    lines.append("| 渠道 | 性能 | 兼容 | 质量 | 长上下文 | 总评分 |")
+    lines.append("| 模型@渠道 | 性能 | 兼容 | 质量 | 长上下文 | 总评分 |")
     lines.append("|---|---|---|---|---|---|")
     for p in providers:
         s = scores[p["id"]]
@@ -754,9 +754,54 @@ def render_markdown(agg_by_provider, scores, providers):
 # 主流程
 # ---------------------------------------------------------------------------
 
+def build_combos(cfg):
+    """把 channels × models 展开成「模型@渠道」组合（每个组合等价于旧版一个 provider）。"""
+    channels = cfg.get("channels", [])
+    models = cfg.get("models", [])
+    combos = []
+    for m in models:
+        aliases = m.get("aliases") or {}
+        for ch in channels:
+            alias = aliases.get(ch["id"])
+            if alias is None:
+                continue  # 该模型不挂在该渠道上
+            model_supports = m.get("supports") or {}
+            channel_supports = ch.get("supports") or {}
+            combos.append({
+                "id": "%s__%s" % (m["id"], ch["id"]),
+                "model_id": m["id"],
+                "model_name": m.get("name", m["id"]),
+                "channel_id": ch["id"],
+                "channel_name": ch.get("name", ch["id"]),
+                "name": "%s @ %s" % (m.get("name", m["id"]), ch.get("name", ch["id"])),
+                "model": alias,
+                "base_url": ch["base_url"],
+                "api_key_env": ch.get("api_key_env", ""),
+                "api_key": ch.get("api_key", ""),
+                "reasoning": bool(m.get("reasoning", False)),
+                "nominal_context_tokens": int(m.get("context", 0) or 0),
+                "supports": {**model_supports, **channel_supports},
+                "notes": ch.get("notes", ""),
+            })
+    return combos
+
+
+# 示例模式专用：每个「模型×渠道」组合只跑这一条，用于快速验证连通性与基本表现
+SAMPLE_CASE = {
+    "id": "sample_smoke", "name": "示例-连通性", "category": "sample", "layer": "sample",
+    "prompt": "请用一句话介绍你自己（不超过 50 字）。",
+    "max_tokens": 200, "stream": True,
+}
+
+
 def load_config(args):
     with open(args.providers_file, encoding="utf-8") as f:
         cfg = json.load(f)
+    # 兼容旧格式（providers 直接是组合）与新版（channels + models）
+    if "channels" in cfg or "models" in cfg:
+        providers = build_combos(cfg)
+    else:
+        providers = list(cfg.get("providers", []))
     cases = []
     for layer in args.layers.split(","):
         layer = layer.strip()
@@ -768,7 +813,77 @@ def load_config(args):
             for c in json.load(f):
                 c["layer"] = layer
                 cases.append(c)
-    return cfg, cases, list(cfg["providers"])
+    return cfg, cases, providers
+
+
+def render_sample_table(rows):
+    print("\n" + "=" * 100)
+    print("  示例结果：每个「模型 × 渠道」组合跑 1 条示例")
+    print("=" * 100)
+    print("%-18s %-10s %-10s %-10s %-12s %-8s %-8s %s" % (
+        "模型", "渠道", "TTFT(ms)", "E2E(ms)", "速度(tok/s)", "内容字数", "推理字数", "状态"))
+    print("-" * 100)
+    for r in rows:
+        m = r.get("metrics") or {}
+        mid = r["meta"].get("model_id", "")
+        chn = r["meta"].get("channel_name", "")
+        if r.get("error"):
+            print("%-18s %-10s %-10s %-10s %-12s %-8s %-8s ❌ %s" % (
+                mid, chn, "-", "-", "-", "-", "-", r["error"].get("type", "error")))
+        elif r.get("skipped"):
+            print("%-18s %-10s %-10s %-10s %-12s %-8s %-8s ⏭ 跳过" % (mid, chn, "-", "-", "-", "-", "-"))
+        else:
+            print("%-18s %-10s %-10s %-10s %-12s %-8s %-8s ✅" % (
+                mid, chn, m.get("ttft_ms") or "-", m.get("e2e_ms") or "-",
+                m.get("tokens_per_sec") or "-", m.get("content_chars") or 0, m.get("reasoning_chars") or 0))
+    print("\n--- 各组合输出预览 ---")
+    for r in rows:
+        mid = r["meta"].get("model_id", "")
+        chn = r["meta"].get("channel_name", "")
+        out = (r.get("output") or {}).get("text") or ""
+        if r.get("error"):
+            print("  [%s @ %s] 错误：%s" % (mid, chn, r["error"].get("message", "")[:120]))
+        elif r.get("skipped"):
+            print("  [%s @ %s] 跳过：%s" % (mid, chn, r.get("skip_reason", "")))
+        else:
+            print("  [%s @ %s] %s" % (mid, chn, (out or "(空)")[:80].replace("\n", " ")))
+
+
+def run_sample(providers, cfg, out_dir):
+    print("[示例模式] 每个「模型×渠道」组合只跑 1 条示例，共 %d 次请求" % len(providers))
+    env = env_info()
+    rows = []
+    for p in providers:
+        log("sample -> %s @ %s" % (p["model_id"], p["channel_name"]))
+        result = run_case(p, SAMPLE_CASE, cfg, 0, once=True)
+        result.setdefault("meta", {})
+        result["meta"].update({
+            "layer": "sample", "case_id": SAMPLE_CASE["id"], "case_name": SAMPLE_CASE["name"],
+            "category": "sample", "provider_id": p["id"], "provider_name": p["name"],
+            "model_id": p["model_id"], "model_name": p["model_name"],
+            "channel_id": p["channel_id"], "channel_name": p["channel_name"],
+            "model": p["model"], "base_url": p["base_url"],
+        })
+        result["environment"] = env
+        layer_dir = os.path.join(out_dir, "raw", "sample")
+        os.makedirs(layer_dir, exist_ok=True)
+        with open(os.path.join(layer_dir, "%s__%s.json" % (p["id"], SAMPLE_CASE["id"])), "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        rows.append(result)
+    render_sample_table(rows)
+    summary = {
+        "mode": "sample", "sample_case": SAMPLE_CASE,
+        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "rows": [{
+            "model_id": r["meta"]["model_id"], "channel_id": r["meta"]["channel_id"],
+            "channel_name": r["meta"]["channel_name"], "base_url": r["meta"]["base_url"],
+            "model": r["meta"]["model"], "error": r.get("error"), "skipped": r.get("skipped"),
+            "metrics": r.get("metrics"), "output_preview": ((r.get("output") or {}).get("text") or "")[:200],
+        } for r in rows],
+    }
+    with open(os.path.join(out_dir, "sample_summary.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    print("\n示例结果已写入：%s" % os.path.join(os.path.abspath(out_dir), "sample_summary.json"))
 
 
 def main():
@@ -776,9 +891,11 @@ def main():
     ap.add_argument("--providers-file", default=DEFAULT_PROVIDERS_FILE)
     ap.add_argument("--cases-dir", default=DEFAULT_CASES_DIR)
     ap.add_argument("--out", default=DEFAULT_OUTPUT_DIR)
-    ap.add_argument("--providers", default="", help="逗号分隔渠道 id，默认全部")
+    ap.add_argument("--models", default="", help="逗号分隔模型 id，默认全部")
+    ap.add_argument("--channels", default="", help="逗号分隔渠道 id，默认全部")
     ap.add_argument("--layers", default=",".join(LAYERS))
     ap.add_argument("--max-cases", type=int, default=0)
+    ap.add_argument("--sample", action="store_true", help="示例模式：每个「模型×渠道」组合只跑 1 条示例")
     ap.add_argument("--once", action="store_true", help="单次模式：每条用例只跑 1 次、不做重试，快速预览结果")
     ap.add_argument("--list-cases", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
@@ -788,12 +905,17 @@ def main():
 
     cfg, cases, providers = load_config(args)
     if not providers:
-        sys.exit("没有可用渠道，请检查 config/providers.json 与 --providers")
-    if args.providers:
-        ids = set(args.providers.split(","))
-        providers = [p for p in providers if p["id"] in ids]
+        sys.exit("没有可用组合，请检查 config/providers.json 的 channels/models 与 --models/--channels")
+    if args.models:
+        ids = set(args.models.split(","))
+        providers = [p for p in providers if p["model_id"] in ids]
         if not providers:
-            sys.exit("--providers 指定的渠道 id 不存在")
+            sys.exit("--models 指定的模型 id 不存在")
+    if args.channels:
+        ids = set(args.channels.split(","))
+        providers = [p for p in providers if p["channel_id"] in ids]
+        if not providers:
+            sys.exit("--channels 指定的渠道 id 不存在")
     if args.max_cases > 0:
         cases = cases[:args.max_cases]
 
@@ -801,6 +923,11 @@ def main():
     if once:
         cfg["retries"] = 0  # 单次模式不重试
         print("[单次模式] 每条用例只执行 1 次、不做重试，快速预览结果")
+
+    # 示例模式：每个组合只跑 1 条示例，跑完即返回
+    if args.sample:
+        run_sample(providers, cfg, args.out)
+        return
 
     if args.list_cases:
         print("共 %d 条用例：" % len(cases))

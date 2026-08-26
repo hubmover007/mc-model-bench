@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "environment": {
     "note": "所有渠道必须在同一台机器（同一 AWS 实例）上、同一时间段内顺序执行，保证网络、算力、环境一致；runner 会把本机环境信息写入结果文件作为证据。"
   },
@@ -20,52 +20,50 @@
     "quality": 0.2,
     "long_context": 0.2
   },
-  "providers": [
+  "channels": [
     {
-      "id": "easyrouter",
-      "name": "EasyRouter",
-      "base_url": "https://easyrouter.io/v1",
-      "api_key_env": "EASYROUTER_API_KEY",
+      "id": "channel_a",
+      "name": "渠道A",
+      "base_url": "https://api.channel-a.example.com/v1",
+      "api_key_env": "CHANNEL_A_API_KEY",
       "api_key": "",
-      "model": "kimi-k3",
-      "reasoning": true,
-      "nominal_context_tokens": 128000,
-      "supports": {
-        "stream": true,
-        "temperature": false,
-        "stop": true,
-        "max_tokens": true,
-        "tools": true,
-        "json_mode": true,
-        "multi_turn": true,
-        "system_prompt": true,
-        "reasoning_content": true,
-        "cache": true
-      },
-      "notes": "示例渠道：kimi-k3 推理模型，不支持自定义 temperature"
+      "supports": {"stream_usage": true},
+      "notes": "示例：请替换为真实 base_url"
     },
     {
-      "id": "mayi",
-      "name": "Mayi",
-      "base_url": "https://maas-api-ga.computrix.ai/v1",
-      "api_key_env": "MAYI_API_KEY",
+      "id": "channel_b",
+      "name": "渠道B",
+      "base_url": "https://api.channel-b.example.com/v1",
+      "api_key_env": "CHANNEL_B_API_KEY",
       "api_key": "",
-      "model": "kimi-k3",
+      "supports": {"stream_usage": true},
+      "notes": "示例：请替换为真实 base_url"
+    }
+  ],
+  "models": [
+    {
+      "id": "deepseek-v4-pro",
+      "aliases": {"channel_a": "deepseek-v4-pro", "channel_b": "deepseek-v4-pro"},
+      "reasoning": false,
+      "context": 128000,
+      "supports": {"temperature": true, "tools": true, "json_mode": true},
+      "notes": ""
+    },
+    {
+      "id": "glm5.2",
+      "aliases": {"channel_a": "glm-5.2", "channel_b": "glm-5.2"},
+      "reasoning": false,
+      "context": 128000,
+      "supports": {"temperature": true, "tools": true, "json_mode": true},
+      "notes": ""
+    },
+    {
+      "id": "kimi-k3",
+      "aliases": {"channel_a": "kimi-k3", "channel_b": "kimi-k3"},
       "reasoning": true,
-      "nominal_context_tokens": 128000,
-      "supports": {
-        "stream": true,
-        "temperature": false,
-        "stop": true,
-        "max_tokens": true,
-        "tools": true,
-        "json_mode": true,
-        "multi_turn": true,
-        "system_prompt": true,
-        "reasoning_content": true,
-        "cache": true
-      },
-      "notes": "示例渠道：kimi-k3 推理模型"
+      "context": 128000,
+      "supports": {"temperature": false, "tools": true, "json_mode": true},
+      "notes": "推理模型：不支持 temperature，max_tokens 自动抬到 reasoning_max_tokens"
     }
   ]
 }

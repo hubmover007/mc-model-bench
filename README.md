@@ -11,7 +11,7 @@ TTFT / chunk 分布 / 生成速度 / 端到端延迟 / usage（含 reasoning_tok
 
 ```
 mc-model-bench/
-├── config/providers.json        # 渠道配置（只换 base_url / api_key / model）
+├── config/providers.json        # 渠道 + 模型配置（channels × models 分离，只换 base_url/api_key/model）
 ├── test_cases/
 │   ├── performance.json         # 性能基准层（12 条，四象限）
 │   ├── compatibility.json       # 功能兼容层（11 条）
@@ -34,26 +34,28 @@ mc-model-bench/
 ```bash
 pip install -r requirements.txt
 
-# 1. 配置渠道 + api key（只改这三项，其余全渠道共用）
-#    config/providers.json：id / base_url / api_key_env / model
-export EASYROUTER_API_KEY=sk-...     # Windows: $env:EASYROUTER_API_KEY="sk-..."
-export MAYI_API_KEY=sk-...
+# 1. 配置渠道 + 模型 + api key（只改 base_url / api_key / model 三项）
+#    config/providers.json：channels 写渠道，models 写模型（aliases 映射各渠道实际调用名）
+export CHANNEL_A_API_KEY=sk-...     # Windows: $env:CHANNEL_A_API_KEY="sk-..."
+export CHANNEL_B_API_KEY=sk-...
 
 # 2. 下载抽取 HuggingFace 质量层用例（可选，离线用自带样例）
 python download_datasets.py --datasets gsm8k,truthfulqa --limit 50
 
 # 3. 执行
-python runner.py --list-cases        # 查看用例
-python runner.py --dry-run           # 只看请求计划
-python runner.py --once              # 单次模式：每条用例只跑 1 次、不重试，快速看结果
-python runner.py                     # 全量执行（用例固定顺序依次发给所有渠道）
-python runner.py --providers easyrouter,mayi --layers performance,quality
+python runner.py --sample           # 示例模式：每个「模型×渠道」组合只跑 1 条示例（3模型×2渠道=6次）
+python runner.py --list-cases       # 查看用例
+python runner.py --dry-run          # 只看请求计划
+python runner.py --once             # 单次模式：全量用例每条只跑 1 次、不重试，快速看一轮
+python runner.py                    # 全量执行（用例固定顺序依次发给所有组合）
+python runner.py --models kimi-k3 --channels channel_a --layers performance,quality
 
 # 4. 生成报告
 python export_report.py --out output --result 测试报告.xlsx
 
 # 5. 本地自检（不消耗真实额度）
 python mock_server.py 18080
+python runner.py --sample --providers-file config/providers.mock.json --out output_mock
 python runner.py --providers-file config/providers.mock.json --out output_mock
 ```
 

@@ -161,7 +161,7 @@ def build_workbook():
 
     # ---------- 汇总表 ----------
     ws = wb.create_sheet("汇总表")
-    headers = ["渠道", "TTFT均值(ms)", "TTFT P50(ms)", "TTFT P95(ms)", "速度均值(tok/s)", "E2E均值(ms)",
+    headers = ["模型@渠道", "TTFT均值(ms)", "TTFT P50(ms)", "TTFT P95(ms)", "速度均值(tok/s)", "E2E均值(ms)",
                "错误率(%)", "兼容通过率(%)", "质量正确率(%)", "长上下文检索率(%)", "备注"]
     write_row(ws, 1, headers)
     style_header(ws, len(headers))
@@ -196,7 +196,7 @@ def build_workbook():
 
     # ---------- 性能明细 ----------
     ws = wb.create_sheet("性能明细")
-    headers = ["用例ID", "分类", "渠道", "TTFT(ms)", "内容TTFT(ms)", "E2E(ms)", "生成耗时(ms)", "输出tokens",
+    headers = ["用例ID", "分类", "模型@渠道", "TTFT(ms)", "内容TTFT(ms)", "E2E(ms)", "生成耗时(ms)", "输出tokens",
                "速度(tok/s)", "推理tokens", "缓存tokens", "chunk数", "chunk间隔均值(ms)", "chunk间隔std", "错误类型", "错误详情"]
     write_row(ws, 1, headers)
     style_header(ws, len(headers))
@@ -208,7 +208,7 @@ def build_workbook():
 
     # ---------- 兼容性明细 ----------
     ws = wb.create_sheet("兼容性明细")
-    headers = ["用例ID", "功能点", "渠道", "结果", "失败表现/详情", "输出tokens", "备注"]
+    headers = ["用例ID", "功能点", "模型@渠道", "结果", "失败表现/详情", "输出tokens", "备注"]
     write_row(ws, 1, headers)
     style_header(ws, len(headers))
     set_widths(ws, [16, 18, 15, 10, 52, 11, 22])
@@ -219,7 +219,7 @@ def build_workbook():
 
     # ---------- 质量明细 ----------
     ws = wb.create_sheet("质量明细")
-    headers = ["用例ID", "分类", "渠道", "结果", "判分详情", "参考答案", "输出摘要", "备注"]
+    headers = ["用例ID", "分类", "模型@渠道", "结果", "判分详情", "参考答案", "输出摘要", "备注"]
     write_row(ws, 1, headers)
     style_header(ws, len(headers))
     set_widths(ws, [18, 12, 15, 10, 26, 40, 40, 22])
@@ -230,7 +230,7 @@ def build_workbook():
 
     # ---------- 长上下文明细 ----------
     ws = wb.create_sheet("长上下文明细")
-    headers = ["用例ID", "渠道", "梯度(tokens)", "检索成功", "针位置", "答案摘要", "输出tokens", "备注"]
+    headers = ["用例ID", "模型@渠道", "梯度(tokens)", "检索成功", "针位置", "答案摘要", "输出tokens", "备注"]
     write_row(ws, 1, headers)
     style_header(ws, len(headers))
     set_widths(ws, [16, 15, 12, 10, 9, 30, 11, 28])
@@ -241,7 +241,7 @@ def build_workbook():
 
     # ---------- 评分模型 ----------
     ws = wb.create_sheet("评分模型")
-    headers = ["渠道", "TTFT得分", "速度得分", "E2E得分", "性能得分", "兼容得分", "质量得分", "长上下文得分", "总评分", "排名"]
+    headers = ["模型@渠道", "TTFT得分", "速度得分", "E2E得分", "性能得分", "兼容得分", "质量得分", "长上下文得分", "总评分", "排名"]
     write_row(ws, 1, headers)
     style_header(ws, len(headers))
     set_widths(ws, [16, 10, 10, 10, 10, 10, 10, 12, 10, 8])
