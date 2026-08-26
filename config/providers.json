@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "environment": {
+    "note": "所有渠道必须在同一台机器（同一 AWS 实例）上、同一时间段内顺序执行，保证网络、算力、环境一致；runner 会把本机环境信息写入结果文件作为证据。"
+  },
+  "shared_request_params": {
+    "temperature": 0.0,
+    "top_p": 1.0
+  },
+  "reasoning_max_tokens": 4096,
+  "timeouts": {
+    "connect_seconds": 10,
+    "read_seconds": 180,
+    "read_seconds_long_context": 600
+  },
+  "retries": 2,
+  "score_weights": {
+    "performance": 0.3,
+    "compatibility": 0.3,
+    "quality": 0.2,
+    "long_context": 0.2
+  },
+  "providers": [
+    {
+      "id": "easyrouter",
+      "name": "EasyRouter",
+      "base_url": "https://easyrouter.io/v1",
+      "api_key_env": "EASYROUTER_API_KEY",
+      "api_key": "",
+      "model": "kimi-k3",
+      "reasoning": true,
+      "nominal_context_tokens": 128000,
+      "supports": {
+        "stream": true,
+        "temperature": false,
+        "stop": true,
+        "max_tokens": true,
+        "tools": true,
+        "json_mode": true,
+        "multi_turn": true,
+        "system_prompt": true,
+        "reasoning_content": true,
+        "cache": true
+      },
+      "notes": "示例渠道：kimi-k3 推理模型，不支持自定义 temperature"
+    },
+    {
+      "id": "mayi",
+      "name": "Mayi",
+      "base_url": "https://maas-api-ga.computrix.ai/v1",
+      "api_key_env": "MAYI_API_KEY",
+      "api_key": "",
+      "model": "kimi-k3",
+      "reasoning": true,
+      "nominal_context_tokens": 128000,
+      "supports": {
+        "stream": true,
+        "temperature": false,
+        "stop": true,
+        "max_tokens": true,
+        "tools": true,
+        "json_mode": true,
+        "multi_turn": true,
+        "system_prompt": true,
+        "reasoning_content": true,
+        "cache": true
+      },
+      "notes": "示例渠道：kimi-k3 推理模型"
+    }
+  ]
+}

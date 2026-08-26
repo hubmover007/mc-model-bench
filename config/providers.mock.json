@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "environment": {"note": "本地 mock 验证用配置（不消耗真实额度）"},
+  "shared_request_params": {"temperature": 0.0, "top_p": 1.0},
+  "reasoning_max_tokens": 4096,
+  "timeouts": {"connect_seconds": 5, "read_seconds": 60, "read_seconds_long_context": 120},
+  "retries": 1,
+  "score_weights": {"performance": 0.3, "compatibility": 0.3, "quality": 0.2, "long_context": 0.2},
+  "providers": [
+    {"id": "mock_a", "name": "Mock渠道A", "base_url": "http://127.0.0.1:18080/v1",
+     "api_key": "test-key-a", "api_key_env": "", "model": "kimi-k3", "reasoning": true,
+     "nominal_context_tokens": 128000, "supports": {"stream_usage": true}, "notes": ""},
+    {"id": "mock_b", "name": "Mock渠道B", "base_url": "http://127.0.0.1:18080/v1",
+     "api_key": "test-key-b", "api_key_env": "", "model": "kimi-k3", "reasoning": true,
+     "nominal_context_tokens": 32000, "supports": {"stream_usage": true}, "notes": "标称 32K，验证长上下文跳过"}
+  ]
+}

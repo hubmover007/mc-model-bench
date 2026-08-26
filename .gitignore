@@ -1,0 +1,10 @@
+# 运行产物
+output/
+output_mock/
+datasets/
+report_*.xlsx
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env

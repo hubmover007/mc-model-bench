@@ -1,0 +1,22 @@
+[
+  {"id": "lc_needle_10k", "name": "大海捞针-10K", "target_tokens": 10000,
+   "needle": {"text": "【重要通知】抽奖码：7C9F-42KX-8QZ1。中奖人：李华。奖品：iPhone 16 Pro 512GB。", "depth": 0.5},
+   "prompt": "请仔细阅读以下全部文本，然后回答问题。\n\n{needle_text}\n\n问题：{question}",
+   "question": "以上全部文本中提到的抽奖码是什么？请只回答抽奖码本身，不要输出其他内容。",
+   "expect_contains": "7C9F-42KX-8QZ1", "max_tokens": 2048, "stream": true},
+  {"id": "lc_needle_32k", "name": "大海捞针-32K", "target_tokens": 32000,
+   "needle": {"text": "【重要通知】抽奖码：3M2A-91PL-6XW4。中奖人：王芳。奖品：MacBook Pro 14 英寸。", "depth": 0.25},
+   "prompt": "请仔细阅读以下全部文本，然后回答问题。\n\n{needle_text}\n\n问题：{question}",
+   "question": "以上全部文本中提到的抽奖码是什么？请只回答抽奖码本身，不要输出其他内容。",
+   "expect_contains": "3M2A-91PL-6XW4", "max_tokens": 2048, "stream": true},
+  {"id": "lc_needle_64k", "name": "大海捞针-64K", "target_tokens": 64000,
+   "needle": {"text": "【重要通知】抽奖码：KQ8V-27RH-5TD9。中奖人：张伟。奖品：索尼 A7M4 相机。", "depth": 0.75},
+   "prompt": "请仔细阅读以下全部文本，然后回答问题。\n\n{needle_text}\n\n问题：{question}",
+   "question": "以上全部文本中提到的抽奖码是什么？请只回答抽奖码本身，不要输出其他内容。",
+   "expect_contains": "KQ8V-27RH-5TD9", "max_tokens": 2048, "stream": true},
+  {"id": "lc_needle_128k", "name": "大海捞针-128K", "target_tokens": 128000,
+   "needle": {"text": "【重要通知】抽奖码：9X2B-64NF-3CQ7。中奖人：刘洋。奖品：大疆 Air 3 无人机。", "depth": 0.5},
+   "prompt": "请仔细阅读以下全部文本，然后回答问题。\n\n{needle_text}\n\n问题：{question}",
+   "question": "以上全部文本中提到的抽奖码是什么？请只回答抽奖码本身，不要输出其他内容。",
+   "expect_contains": "9X2B-64NF-3CQ7", "max_tokens": 2048, "stream": true}
+]
