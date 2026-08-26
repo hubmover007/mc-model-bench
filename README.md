@@ -45,6 +45,7 @@ python download_datasets.py --datasets gsm8k,truthfulqa --limit 50
 # 3. 执行
 python runner.py --list-cases        # 查看用例
 python runner.py --dry-run           # 只看请求计划
+python runner.py --once              # 单次模式：每条用例只跑 1 次、不重试，快速看结果
 python runner.py                     # 全量执行（用例固定顺序依次发给所有渠道）
 python runner.py --providers easyrouter,mayi --layers performance,quality
 

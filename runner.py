@@ -449,9 +449,13 @@ def validate_case(case, result):
                        "detail": "渠道接受 temperature=0 参数"})
     elif feature == "temperature_zero":
         outs = [o.get("output", {}).get("text", "") for o in result.get("run_details", [])]
-        identical = len(set(outs)) <= 1
-        checks.append({"name": "deterministic", "severity": "pass" if identical else "warn",
-                       "detail": "两次输出完全一致" if identical else "两次输出不一致（长度 %s），部分渠道在 temperature=0 下仍非确定性" % [len(o) for o in outs]})
+        if len(outs) < 2:
+            checks.append({"name": "deterministic", "severity": "warn",
+                           "detail": "单次模式：仅采样 1 次，未做一致性双跑"})
+        else:
+            identical = len(set(outs)) <= 1
+            checks.append({"name": "deterministic", "severity": "pass" if identical else "warn",
+                           "detail": "两次输出完全一致" if identical else "两次输出不一致（长度 %s），部分渠道在 temperature=0 下仍非确定性" % [len(o) for o in outs]})
     elif feature == "function_calling":
         tcs = (result.get("output") or {}).get("tool_calls") or []
         names = [tc.get("function", {}).get("name") for tc in tcs if tc.get("function")]
@@ -499,7 +503,7 @@ def validate_case(case, result):
 # 单条用例执行（重试 / temperature=0 双跑 / 跳过逻辑）
 # ---------------------------------------------------------------------------
 
-def run_case(provider, case, cfg, order_index):
+def run_case(provider, case, cfg, order_index, once=False):
     nominal = int(provider.get("nominal_context_tokens") or 0)
     need = int(case.get("target_tokens") or 0)
     if nominal and need and need > nominal:
@@ -516,7 +520,9 @@ def run_case(provider, case, cfg, order_index):
     read_timeout = timeouts.get("read_seconds_long_context", 600) if need else timeouts.get("read_seconds", 180)
     timeout = (timeouts.get("connect_seconds", 10), read_timeout)
 
-    result, attempts, n_runs, retries = None, [], int(case.get("runs", 1)), int(cfg.get("retries", 0))
+    # 单次模式：每条用例只跑 1 次（跳过 temperature=0 一致性双跑）
+    n_runs = 1 if once else int(case.get("runs", 1))
+    result, attempts, retries = None, [], int(cfg.get("retries", 0))
     for attempt in range(1 + retries):
         try:
             runs = [run_stream(url, headers, body, timeout) if case.get("stream") else run_nonstream(url, headers, body, timeout)
@@ -773,6 +779,7 @@ def main():
     ap.add_argument("--providers", default="", help="逗号分隔渠道 id，默认全部")
     ap.add_argument("--layers", default=",".join(LAYERS))
     ap.add_argument("--max-cases", type=int, default=0)
+    ap.add_argument("--once", action="store_true", help="单次模式：每条用例只跑 1 次、不做重试，快速预览结果")
     ap.add_argument("--list-cases", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--verbose", action="store_true")
@@ -790,6 +797,11 @@ def main():
     if args.max_cases > 0:
         cases = cases[:args.max_cases]
 
+    once = args.once
+    if once:
+        cfg["retries"] = 0  # 单次模式不重试
+        print("[单次模式] 每条用例只执行 1 次、不做重试，快速预览结果")
+
     if args.list_cases:
         print("共 %d 条用例：" % len(cases))
         for c in cases:
@@ -800,8 +812,9 @@ def main():
                 c["layer"], c["id"], c.get("name", ""), c.get("stream"), c.get("max_tokens"), extra))
         return
 
-    print("渠道：%d 个 | 用例：%d 条 | 预计请求：%d 次（含 temperature=0 双跑）" % (
-        len(providers), len(cases), sum(int(c.get("runs", 1)) for c in cases) * len(providers)))
+    total_requests = (len(cases) * len(providers)) if once else (sum(int(c.get("runs", 1)) for c in cases) * len(providers))
+    print("渠道：%d 个 | 用例：%d 条 | 预计请求：%d 次%s" % (
+        len(providers), len(cases), total_requests, "" if once else "（含 temperature=0 双跑）"))
 
     env = env_info()
     raw_dir = os.path.join(args.out, "raw")
@@ -822,7 +835,7 @@ def main():
                         case.get("stream"), body.get("max_tokens")))
                     continue
                 log("[%d/%d] %s -> %s" % (ci, len(cases), case["id"], p["name"]))
-                result = run_case(p, case, cfg, order_index)
+                result = run_case(p, case, cfg, order_index, once=once)
                 result.setdefault("meta", {})
                 result["meta"].update({
                     "layer": case["layer"], "case_id": case["id"], "case_name": case.get("name", ""),
