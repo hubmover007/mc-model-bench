@@ -808,14 +808,16 @@ def render_markdown(agg_by_provider, scores, providers, env=None, test_config=No
         lines.append("")
 
     lines.append("\n## 3. 性能基准层\n")
-    lines.append("| 模型@渠道 | 用例 | 成功 | 错误 | TTFT均值(ms) | TTFT P50 | TTFT P95 | 速度(tok/s) | E2E均值(ms) | 推理tokens | 缓存tokens |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("| 模型@渠道 | 用例 | 成功 | 错误 | TTFT均值(ms) | TTFT P50 | TTFT P95 | 速度(tok/s) | E2E均值(ms) | 推理tokens | 推理占比 | 缓存tokens |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for p in providers:
         a = agg_by_provider[p["id"]]["performance"]
-        lines.append("| %s | %d | %d | %d | %s | %s | %s | %s | %s | %s | %s |" % (
+        ratio = (a["reasoning_tokens"] / a["completion_tokens"] * 100) if a["completion_tokens"] else None
+        ratio_str = ("%.0f%%" % ratio) if ratio is not None else "-"
+        lines.append("| %s | %d | %d | %d | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             p["name"], a["cases"], a["ok"], sum(a["errors"].values()),
             agg_mean(a["ttft_ms"]), percentile(a["ttft_ms"], 0.5), percentile(a["ttft_ms"], 0.95),
-            agg_mean(a["speed"]), agg_mean(a["e2e_ms"]), a["reasoning_tokens"], a["cached_tokens_sum"]))
+            agg_mean(a["speed"]), agg_mean(a["e2e_ms"]), a["reasoning_tokens"], ratio_str, a["cached_tokens_sum"]))
 
     lines.append("\n## 4. 功能兼容层（通过/总数）\n")
     feats = []
@@ -1039,6 +1041,102 @@ def run_sample(providers, cfg, out_dir, sample_case, env_tag=""):
         print("[提示] 自动生成示例 Excel 失败：%s" % e)
 
 
+# ---------------------------------------------------------------------------
+# 缓存命中专项测试
+# ---------------------------------------------------------------------------
+
+CACHE_PREFIX_TOKENS = 2000
+CACHE_RUNS = 3
+
+
+def render_cache_table(rows):
+    print("\n" + "=" * 112)
+    print("  缓存命中测试结果（前缀 %d token，连打 %d 次）" % (CACHE_PREFIX_TOKENS, CACHE_RUNS))
+    print("=" * 112)
+    print("%-16s %-10s %-11s %-11s %-11s %-13s %-12s %-12s %s" % (
+        "模型", "渠道", "第1次TTFT", "第2次TTFT", "第3次TTFT", "cached(2/3)", "前缀cached", "基线cached", "命中"))
+    print("-" * 112)
+    for r in rows:
+        sp = r.get("same_prompt", [])
+
+        def ttft(i):
+            return sp[i - 1].get("ttft_ms") if len(sp) >= i and sp[i - 1].get("ttft_ms") is not None else "-"
+
+        cached23 = " / ".join(str(sp[i - 1].get("cached_tokens")) if len(sp) >= i else "-" for i in (2, 3))
+        pr = r.get("prefix_reuse", {}).get("cached_tokens")
+        bl = r.get("baseline", {}).get("cached_tokens")
+        print("%-16s %-10s %-11s %-11s %-11s %-13s %-12s %-12s %s" % (
+            r.get("model_id"), r.get("channel_name"), ttft(1), ttft(2), ttft(3),
+            cached23, pr if pr is not None else "-", bl if bl is not None else "-",
+            "✅" if r.get("hit") else "❌"))
+    print("\n说明：cached_tokens>0 表示命中；前缀cached≈前缀token数表示前缀复用命中；基线应为0（防误判）。\n")
+
+
+def run_cache(providers, cfg, out_dir, env_tag=""):
+    print("[缓存测试] 每个「模型×渠道」组合：长前缀连打 %d 次 + 前缀复用 + 基线，共 %d 个组合" % (
+        CACHE_RUNS, len(providers)))
+    env = env_info(env_tag)
+    prefix_a = build_filler(int(CACHE_PREFIX_TOKENS * 1.2), stable_seed("cache_prefix_a"))
+    prefix_b = build_filler(int(CACHE_PREFIX_TOKENS * 1.2), stable_seed("cache_prefix_b"))
+    q1 = "请用一句话总结以上内容的核心观点。"
+    q2 = "以上内容主要讨论了哪些技术？请列举三项。"
+    to = cfg.get("timeouts", {})
+    timeout = (to.get("connect_seconds", 10), to.get("read_seconds", 180))
+
+    def call(p, prefix, question):
+        case = {"id": "cache_tmp", "prompt": prefix + "\n\n" + question, "stream": True, "max_tokens": 512}
+        body = build_request_body(p, case, cfg.get("shared_request_params", {}), cfg.get("reasoning_max_tokens", 16384))
+        url = p["base_url"].rstrip("/") + "/chat/completions"
+        headers = {"Authorization": "Bearer " + resolve_api_key(p), "Content-Type": "application/json"}
+        try:
+            return run_stream(url, headers, body, timeout)
+        except ApiError as e:
+            return {"error": {"type": e.kind, "message": str(e)[:200]}}
+
+    rows = []
+    for p in providers:
+        entry = {"model_id": p["model_id"], "channel_id": p["channel_id"], "channel_name": p["channel_name"],
+                 "model": p["model"], "base_url": p["base_url"]}
+        # 用例1：相同 prompt 连打
+        same = []
+        for i in range(CACHE_RUNS):
+            r = call(p, prefix_a, q1)
+            m = (r.get("metrics") or {}) if not r.get("error") else {}
+            same.append({"run": i + 1, "ttft_ms": m.get("ttft_ms"), "e2e_ms": m.get("e2e_ms"),
+                         "cached_tokens": m.get("cached_tokens"), "prompt_tokens": m.get("prompt_tokens"),
+                         "error": r.get("error")})
+            time.sleep(1)
+        entry["same_prompt"] = same
+        # 用例2：前缀复用（同前缀换问题）
+        r2 = call(p, prefix_a, q2)
+        m2 = (r2.get("metrics") or {}) if not r2.get("error") else {}
+        entry["prefix_reuse"] = {"cached_tokens": m2.get("cached_tokens"), "prompt_tokens": m2.get("prompt_tokens"),
+                                 "ttft_ms": m2.get("ttft_ms"), "error": r2.get("error")}
+        # 用例3：基线（不同前缀，应不命中）
+        r3 = call(p, prefix_b, q1)
+        m3 = (r3.get("metrics") or {}) if not r3.get("error") else {}
+        entry["baseline"] = {"cached_tokens": m3.get("cached_tokens"), "prompt_tokens": m3.get("prompt_tokens"),
+                             "ttft_ms": m3.get("ttft_ms"), "error": r3.get("error")}
+        hits = [1 for s in same[1:] if (s.get("cached_tokens") or 0) > 0]
+        entry["hit_rate"] = "%d/%d" % (len(hits), max(1, CACHE_RUNS - 1))
+        entry["hit"] = len(hits) > 0
+        rows.append(entry)
+        layer_dir = os.path.join(out_dir, "raw", "cache")
+        os.makedirs(layer_dir, exist_ok=True)
+        with open(os.path.join(layer_dir, "%s__cache.json" % p["id"]), "w", encoding="utf-8") as f:
+            json.dump({"meta": {"provider_id": p["id"], "provider_name": p["name"], "model_id": p["model_id"],
+                                "channel_id": p["channel_id"], "channel_name": p["channel_name"],
+                                "model": p["model"], "base_url": p["base_url"]},
+                       "environment": env, "cache_result": entry}, f, ensure_ascii=False, indent=2)
+
+    render_cache_table(rows)
+    summary = {"mode": "cache", "prefix_tokens": CACHE_PREFIX_TOKENS, "runs": CACHE_RUNS,
+               "environment": env, "rows": rows}
+    with open(os.path.join(out_dir, "cache_summary.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    print("缓存结果已写入：%s" % os.path.join(os.path.abspath(out_dir), "cache_summary.json"))
+
+
 def main():
     ap = argparse.ArgumentParser(description="多渠道统一模型能力测试")
     ap.add_argument("--providers-file", default=DEFAULT_PROVIDERS_FILE)
@@ -1048,6 +1146,8 @@ def main():
     ap.add_argument("--channels", default="", help="逗号分隔渠道 id，默认全部")
     ap.add_argument("--layers", default=",".join(LAYERS))
     ap.add_argument("--max-cases", type=int, default=0)
+    ap.add_argument("--per-layer", type=int, default=0, help="每层只保留最后 N 条用例（快速跑子集，如 --per-layer 4）")
+    ap.add_argument("--cache", action="store_true", help="缓存命中专项测试（长前缀连打 + 前缀复用 + 基线）")
     ap.add_argument("--sample", action="store_true", help="示例模式：每个「模型×渠道」组合只跑 1 条示例")
     ap.add_argument("--once", action="store_true", help="单次模式：每条用例只跑 1 次、不做重试，快速预览结果")
     ap.add_argument("--list-cases", action="store_true")
@@ -1073,6 +1173,14 @@ def main():
             sys.exit("--channels 指定的渠道 id 不存在")
     if args.max_cases > 0:
         cases = cases[:args.max_cases]
+    if args.per_layer > 0:
+        # 每层只保留最后 N 条用例（快速子集，避免重复测试）
+        by_layer = {}
+        for c in cases:
+            by_layer.setdefault(c["layer"], []).append(c)
+        cases = []
+        for layer in LAYERS:
+            cases.extend(by_layer.get(layer, [])[-args.per_layer:])
 
     once = args.once
     if once:
@@ -1082,9 +1190,14 @@ def main():
     # 每次运行结果写入带时间戳的子目录，避免覆盖历史结果（--no-ts 可关闭）
     run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = args.out if args.no_ts else os.path.join(args.out, "run_" + run_id)
-    if not args.dry_run:
+    if not args.dry_run and not args.list_cases:
         os.makedirs(out_dir, exist_ok=True)
         print("本次结果输出目录：%s" % os.path.abspath(out_dir))
+
+    # 缓存命中专项测试
+    if args.cache:
+        run_cache(providers, cfg, out_dir, args.env_tag)
+        return
 
     # 示例模式：复用性能层第 1 条用例，每个组合只跑 1 次，跑完即返回
     if args.sample:
@@ -1168,6 +1281,10 @@ def main():
                    "order": order_log}, f, ensure_ascii=False, indent=2)
 
     agg = aggregate(rows, providers)
+    for a in agg.values():  # 补算推理占比（思考 token 占总输出比例）
+        ct = a["performance"]["completion_tokens"]
+        rt = a["performance"]["reasoning_tokens"]
+        a["performance"]["reasoning_ratio"] = round(rt / ct * 100, 1) if ct else None
     scores = compute_scores(agg, cfg.get("score_weights", {}))
     test_config = build_test_config(cfg, cases)
     summary = {"environment": env, "started_at": started_wall,
