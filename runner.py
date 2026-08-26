@@ -786,12 +786,22 @@ def build_combos(cfg):
     return combos
 
 
-# 示例模式专用：每个「模型×渠道」组合只跑这一条，用于快速验证连通性与基本表现
-SAMPLE_CASE = {
-    "id": "sample_smoke", "name": "示例-连通性", "category": "sample", "layer": "sample",
-    "prompt": "请用一句话介绍你自己（不超过 50 字）。",
-    "max_tokens": 200, "stream": True,
-}
+def load_sample_case(cases_dir):
+    """示例模式复用性能层第 1 条「短输入短输出」用例（perf_sis_01）。"""
+    path = os.path.join(cases_dir, "performance.json")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            perf = json.load(f)
+        for c in perf:
+            if c.get("category") == "短输入短输出":
+                c = dict(c)
+                c["layer"] = "sample"  # 标记为示例层，避免与性能层混淆
+                return c
+    # 兜底：找不到性能层用例时用固定 smoke 提示词
+    return {
+        "id": "sample_smoke", "name": "示例-连通性", "category": "sample", "layer": "sample",
+        "prompt": "请用一句话介绍你自己（不超过 50 字）。", "max_tokens": 200, "stream": True,
+    }
 
 
 def load_config(args):
@@ -849,17 +859,18 @@ def render_sample_table(rows):
             print("  [%s @ %s] %s" % (mid, chn, (out or "(空)")[:80].replace("\n", " ")))
 
 
-def run_sample(providers, cfg, out_dir):
-    print("[示例模式] 每个「模型×渠道」组合只跑 1 条示例，共 %d 次请求" % len(providers))
+def run_sample(providers, cfg, out_dir, sample_case):
+    print("[示例模式] 复用性能层第 1 条「短输入短输出」用例（%s），每个「模型×渠道」组合只跑 1 次，共 %d 次请求" % (
+        sample_case["id"], len(providers)))
     env = env_info()
     rows = []
     for p in providers:
         log("sample -> %s @ %s" % (p["model_id"], p["channel_name"]))
-        result = run_case(p, SAMPLE_CASE, cfg, 0, once=True)
+        result = run_case(p, sample_case, cfg, 0, once=True)
         result.setdefault("meta", {})
         result["meta"].update({
-            "layer": "sample", "case_id": SAMPLE_CASE["id"], "case_name": SAMPLE_CASE["name"],
-            "category": "sample", "provider_id": p["id"], "provider_name": p["name"],
+            "layer": "sample", "case_id": sample_case["id"], "case_name": sample_case.get("name", ""),
+            "category": sample_case.get("category", ""), "provider_id": p["id"], "provider_name": p["name"],
             "model_id": p["model_id"], "model_name": p["model_name"],
             "channel_id": p["channel_id"], "channel_name": p["channel_name"],
             "model": p["model"], "base_url": p["base_url"],
@@ -867,12 +878,12 @@ def run_sample(providers, cfg, out_dir):
         result["environment"] = env
         layer_dir = os.path.join(out_dir, "raw", "sample")
         os.makedirs(layer_dir, exist_ok=True)
-        with open(os.path.join(layer_dir, "%s__%s.json" % (p["id"], SAMPLE_CASE["id"])), "w", encoding="utf-8") as f:
+        with open(os.path.join(layer_dir, "%s__%s.json" % (p["id"], sample_case["id"])), "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         rows.append(result)
     render_sample_table(rows)
     summary = {
-        "mode": "sample", "sample_case": SAMPLE_CASE,
+        "mode": "sample", "sample_case": sample_case,
         "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "rows": [{
             "model_id": r["meta"]["model_id"], "channel_id": r["meta"]["channel_id"],
@@ -924,9 +935,9 @@ def main():
         cfg["retries"] = 0  # 单次模式不重试
         print("[单次模式] 每条用例只执行 1 次、不做重试，快速预览结果")
 
-    # 示例模式：每个组合只跑 1 条示例，跑完即返回
+    # 示例模式：复用性能层第 1 条用例，每个组合只跑 1 次，跑完即返回
     if args.sample:
-        run_sample(providers, cfg, args.out)
+        run_sample(providers, cfg, args.out, load_sample_case(args.cases_dir))
         return
 
     if args.list_cases:

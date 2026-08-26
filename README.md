@@ -43,7 +43,7 @@ export CHANNEL_B_API_KEY=sk-...
 python download_datasets.py --datasets gsm8k,truthfulqa --limit 50
 
 # 3. 执行
-python runner.py --sample           # 示例模式：每个「模型×渠道」组合只跑 1 条示例（3模型×2渠道=6次）
+python runner.py --sample           # 示例模式：复用性能层第1条「短输入短输出」用例，每个组合只跑1次（3模型×2渠道=6次）
 python runner.py --list-cases       # 查看用例
 python runner.py --dry-run          # 只看请求计划
 python runner.py --once             # 单次模式：全量用例每条只跑 1 次、不重试，快速看一轮
