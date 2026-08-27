@@ -129,13 +129,43 @@ def resolve_run_dir(out):
     return os.path.join(out, subs[-1]) if subs else out
 
 
+def rebuild_summary_from_raw(raw_dir):
+    """没有 summary.json 时，从 raw/*.json 反推一份最小 summary（提供 providers/环境/时间）。"""
+    rows = load_raw_rows(raw_dir)
+    providers = {}
+    env = None
+    min_sent = max_sent = None
+    for r in rows:
+        meta = r.get("meta") or {}
+        pid = meta.get("provider_id")
+        if pid and pid not in providers:
+            providers[pid] = {"id": pid, "name": meta.get("provider_name") or pid,
+                              "model": meta.get("model", ""), "base_url": meta.get("base_url", "")}
+        if env is None and r.get("environment"):
+            env = r["environment"]
+        sent = meta.get("sent_at")
+        if sent:
+            min_sent = sent if min_sent is None else min(min_sent, sent)
+            max_sent = sent if max_sent is None else max(max_sent, sent)
+    return {
+        "providers": list(providers.values()),
+        "environment": env or {},
+        "started_at": min_sent or "",
+        "finished_at": max_sent or "",
+        "test_config": {},
+        "rebuilt_from_raw": True,
+    }
+
+
 def generate_report(out_dir, template_path, result_path):
     """把一次完整运行的原始数据回填到报告模板，生成 Excel。返回生成的文件路径。"""
     summary_path = os.path.join(out_dir, "summary.json")
-    if not os.path.exists(summary_path):
-        raise FileNotFoundError("未找到 %s" % summary_path)
-    with open(summary_path, encoding="utf-8") as f:
-        summary = json.load(f)
+    if os.path.exists(summary_path):
+        with open(summary_path, encoding="utf-8") as f:
+            summary = json.load(f)
+    else:
+        summary = rebuild_summary_from_raw(os.path.join(out_dir, "raw"))
+        print("[提示] 未找到 summary.json，已从 raw 兜底重建（参数配置/评分信息可能不完整）")
 
     rows = load_raw_rows(os.path.join(out_dir, "raw"))
     perf, compat, quality, lc, perf_ttft = build_detail_rows(rows)
@@ -174,12 +204,14 @@ def generate_report(out_dir, template_path, result_path):
         "主机：%s | OS：%s | 架构：%s\n"
         "CPU：%s 核 | 内存：%s GB | Python：%s | 时区：%s\n"
         "渠道数：%d | 输出目录：%s\n"
+        "%s"
         "数据来源：runner.py 原始结果，已回填至本报告。"
     ) % (
         summary.get("started_at", ""), summary.get("finished_at", ""),
         env.get("env_tag", ""), env.get("hostname", ""), env.get("os", ""), env.get("machine", ""),
         env.get("cpu_cores", ""), env.get("memory_gb", ""), env.get("python", ""), env.get("tz", ""),
-        len(providers), os.path.abspath(out_dir))
+        len(providers), os.path.abspath(out_dir),
+        "⚠️ 本报告由 raw 兜底重建（原 summary.json 缺失），评分权重/参数配置信息不完整。\n" if summary.get("rebuilt_from_raw") else "")
     ws0.cell(row=3, column=2, value=info).alignment = Alignment(vertical="top", wrap_text=True)
 
     fill_experiment_config(wb, summary)
@@ -224,6 +256,53 @@ def generate_sample_report(out_dir):
     return result_path
 
 
+def generate_cache_report(out_dir):
+    """为 --cache 运行生成缓存命中对比 Excel。"""
+    cache_path = os.path.join(out_dir, "cache_summary.json")
+    if not os.path.exists(cache_path):
+        return None
+    with open(cache_path, encoding="utf-8") as f:
+        s = json.load(f)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "缓存命中"
+    headers = ["模型", "渠道", "第1次TTFT(ms)", "第2次TTFT(ms)", "第3次TTFT(ms)",
+               "cached(第2/3次)", "前缀cached", "基线cached", "命中率", "是否命中"]
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=c, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for i, w in enumerate([16, 12, 12, 12, 12, 14, 12, 12, 10, 10], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    def ttft(sp, i):
+        return sp[i - 1].get("ttft_ms") if len(sp) >= i else None
+
+    def cached(sp, i):
+        return sp[i - 1].get("cached_tokens") if len(sp) >= i else None
+
+    r = 2
+    for row in s.get("rows", []):
+        sp = row.get("same_prompt", [])
+        pr = row.get("prefix_reuse", {}).get("cached_tokens")
+        bl = row.get("baseline", {}).get("cached_tokens")
+        vals = [row.get("model_id"), row.get("channel_name"), ttft(sp, 1), ttft(sp, 2), ttft(sp, 3),
+                "%s / %s" % (cached(sp, 2), cached(sp, 3)), pr, bl,
+                row.get("hit_rate", ""), "是" if row.get("hit") else "否"]
+        for c, v in enumerate(vals, 1):
+            ws.cell(row=r, column=c, value=v)
+        r += 1
+    env = s.get("environment") or {}
+    ws.cell(row=r + 1, column=1, value="前缀 %d token | 连打 %d 次 | 环境标注：%s | 主机：%s" % (
+        s.get("prefix_tokens", 0), s.get("runs", 0), env.get("env_tag", ""), env.get("hostname", "")))
+    result_path = os.path.join(out_dir, "cache_report.xlsx")
+    wb.save(result_path)
+    return result_path
+
+
 def fill_experiment_config(wb, summary):
     """把测试参数/渠道/模型/用例设计写成一个「实验配置」sheet。"""
     tc = summary.get("test_config") or {}
@@ -236,6 +315,9 @@ def fill_experiment_config(wb, summary):
     ws["A1"] = "实验配置（测试参数 + 渠道/模型 + 用例设计）"
     ws["A1"].font = Font(bold=True, size=14)
     r = 3
+    if not tc:
+        ws.cell(row=r, column=1, value="（本报告由 raw 兜底重建，无完整测试参数配置；可重新完整运行 runner.py 以补齐此页）")
+        r += 2
 
     def sec(title, pairs):
         nonlocal r

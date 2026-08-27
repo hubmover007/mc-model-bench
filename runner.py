@@ -1136,6 +1136,15 @@ def run_cache(providers, cfg, out_dir, env_tag=""):
         json.dump(summary, f, ensure_ascii=False, indent=2)
     print("缓存结果已写入：%s" % os.path.join(os.path.abspath(out_dir), "cache_summary.json"))
 
+    # 自动生成缓存命中 Excel
+    try:
+        from export_report import generate_cache_report
+        rp = generate_cache_report(out_dir)
+        if rp:
+            print("缓存报告已生成：%s" % os.path.abspath(rp))
+    except Exception as e:
+        print("[提示] 自动生成缓存 Excel 失败：%s" % e)
+
 
 def main():
     ap = argparse.ArgumentParser(description="多渠道统一模型能力测试")
