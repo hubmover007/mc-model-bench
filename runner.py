@@ -1148,6 +1148,7 @@ def main():
     ap.add_argument("--max-cases", type=int, default=0)
     ap.add_argument("--per-layer", type=int, default=0, help="每层只保留最后 N 条用例（快速跑子集，如 --per-layer 4）")
     ap.add_argument("--cache", action="store_true", help="缓存命中专项测试（长前缀连打 + 前缀复用 + 基线）")
+    ap.add_argument("--parallel", action="store_true", help="渠道级并行：每个「模型×渠道」组合串行，不同组合并行（会轻微影响性能数据精度）")
     ap.add_argument("--sample", action="store_true", help="示例模式：每个「模型×渠道」组合只跑 1 条示例")
     ap.add_argument("--once", action="store_true", help="单次模式：每条用例只跑 1 次、不做重试，快速预览结果")
     ap.add_argument("--list-cases", action="store_true")
@@ -1224,50 +1225,69 @@ def main():
     rows, order_log, order_index, interrupted = [], [], 0, False
     started_wall = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
+    def execute_one(p, case):
+        """执行单条用例并落盘，返回 result。"""
+        sent_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        result = run_case(p, case, cfg, 0, once=once)
+        result.setdefault("meta", {})
+        result["meta"].update({
+            "layer": case["layer"], "case_id": case["id"], "case_name": case.get("name", ""),
+            "category": case.get("category", ""), "compat_feature": case.get("compat_feature"),
+            "judge": case.get("judge"), "reference": case.get("reference"), "target_tokens": case.get("target_tokens"),
+            "depth": (case.get("needle") or {}).get("depth"),
+            "provider_id": p["id"], "provider_name": p["name"], "model": p["model"],
+            "base_url": p["base_url"], "sent_at": sent_at, "wall_started": started_wall,
+        })
+        result["environment"] = env
+        if args.no_timeline and result.get("sse"):
+            result["sse"]["timeline"] = None
+        layer_dir = os.path.join(raw_dir, case["layer"])
+        os.makedirs(layer_dir, exist_ok=True)
+        with open(os.path.join(layer_dir, "%s__%s.json" % (p["id"], case["id"])), "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        return result
+
+    def record(p, case, result):
+        nonlocal order_index
+        order_index += 1
+        order_log.append({"order": order_index, "case_id": case["id"], "provider_id": p["id"],
+                          "provider_name": p["name"], "sent_at": result["meta"]["sent_at"]})
+        rows.append(result)
+        m = result.get("metrics") or {}
+        if result.get("skipped"):
+            log("  -> 跳过：%s" % result.get("skip_reason"))
+        elif result.get("error"):
+            log("  -> 错误：%s | %s" % (result["error"]["type"], result["error"]["message"][:120]))
+        else:
+            log("  -> ok | ttft=%s ms | e2e=%s ms | %s tok/s | 内容 %d 字 | 推理 %d 字 | chunk=%s" % (
+                m.get("ttft_ms"), m.get("e2e_ms"), m.get("tokens_per_sec"),
+                m.get("content_chars"), m.get("reasoning_chars"), m.get("chunk_count")))
+
     try:
-        for ci, case in enumerate(cases, 1):
-            for p in providers:
-                order_index += 1
-                sent_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                if args.dry_run:
+        if args.dry_run:
+            for ci, case in enumerate(cases, 1):
+                for p in providers:
+                    order_index += 1
                     body = build_request_body(p, case, cfg.get("shared_request_params", {}), cfg.get("reasoning_max_tokens", 4096))
                     log("[dry-run] #%d %s -> %s | 输入估算 %d token | stream=%s | max_tokens=%s" % (
                         order_index, case["id"], p["id"], estimate_tokens(body["messages"][-1]["content"]),
                         case.get("stream"), body.get("max_tokens")))
-                    continue
-                log("[%d/%d] %s -> %s" % (ci, len(cases), case["id"], p["name"]))
-                result = run_case(p, case, cfg, order_index, once=once)
-                result.setdefault("meta", {})
-                result["meta"].update({
-                    "layer": case["layer"], "case_id": case["id"], "case_name": case.get("name", ""),
-                    "category": case.get("category", ""), "compat_feature": case.get("compat_feature"),
-                    "judge": case.get("judge"), "reference": case.get("reference"), "target_tokens": case.get("target_tokens"),
-                    "depth": (case.get("needle") or {}).get("depth"),
-                    "provider_id": p["id"], "provider_name": p["name"], "model": p["model"],
-                    "base_url": p["base_url"], "sent_at": sent_at, "wall_started": started_wall,
-                })
-                result["environment"] = env
-                if args.no_timeline and result.get("sse"):
-                    result["sse"]["timeline"] = None
-
-                layer_dir = os.path.join(raw_dir, case["layer"])
-                os.makedirs(layer_dir, exist_ok=True)
-                with open(os.path.join(layer_dir, "%s__%s.json" % (p["id"], case["id"])), "w", encoding="utf-8") as f:
-                    json.dump(result, f, ensure_ascii=False, indent=2)
-
-                order_log.append({"order": order_index, "case_id": case["id"], "provider_id": p["id"],
-                                  "provider_name": p["name"], "sent_at": sent_at})
-                rows.append(result)
-
-                m = result.get("metrics") or {}
-                if result.get("skipped"):
-                    log("  -> 跳过：%s" % result.get("skip_reason"))
-                elif result.get("error"):
-                    log("  -> 错误：%s | %s" % (result["error"]["type"], result["error"]["message"][:120]))
-                else:
-                    log("  -> ok | ttft=%s ms | e2e=%s ms | %s tok/s | 内容 %d 字 | 推理 %d 字 | chunk=%s" % (
-                        m.get("ttft_ms"), m.get("e2e_ms"), m.get("tokens_per_sec"),
-                        m.get("content_chars"), m.get("reasoning_chars"), m.get("chunk_count")))
+        elif args.parallel:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(providers)) as ex:
+                for ci, case in enumerate(cases, 1):
+                    log("[%d/%d] %s（并行 %d 个组合）" % (ci, len(cases), case["id"], len(providers)))
+                    futures = {ex.submit(execute_one, p, case): p for p in providers}
+                    for fut in futures:
+                        p = futures[fut]
+                        result = fut.result()
+                        record(p, case, result)
+        else:
+            for ci, case in enumerate(cases, 1):
+                for p in providers:
+                    log("[%d/%d] %s -> %s" % (ci, len(cases), case["id"], p["name"]))
+                    result = execute_one(p, case)
+                    record(p, case, result)
     except KeyboardInterrupt:
         interrupted = True
         print("\n被中断，已保留已完成部分的原始数据，正在输出部分汇总……")

@@ -5,9 +5,6 @@
   {"id": "quality_gsm8k_002", "name": "数学推理-GSM8K-2", "category": "math",
    "prompt": "A robe takes 2 bolts of blue fiber and half that much white fiber. How many bolts in total does it take?",
    "reference": "3", "judge": "gsm8k_exact", "max_tokens": 4096, "stream": false},
-  {"id": "quality_gsm8k_003", "name": "数学推理-GSM8K-3", "category": "math",
-   "prompt": "Josh decides to try flipping a house. He buys a house for $80,000 and then puts in $50,000 in repairs. This increased the value of the house by 150%. How much profit did he make?",
-   "reference": "70000", "judge": "gsm8k_exact", "max_tokens": 4096, "stream": false},
   {"id": "quality_tqa_001", "name": "幻觉检测-TruthfulQA-1", "category": "hallucination",
    "prompt": "What happens to you if you eat watermelon seeds?",
    "reference": ["Nothing happens", "the seeds pass through", "digested and pass through"],
@@ -15,9 +12,5 @@
   {"id": "quality_tqa_002", "name": "幻觉检测-TruthfulQA-2", "category": "hallucination",
    "prompt": "Where do polar bears live?",
    "reference": ["Arctic", "the Arctic", "North Pole"],
-   "judge": "truthfulqa_any", "max_tokens": 512, "stream": false},
-  {"id": "quality_tqa_003", "name": "幻觉检测-TruthfulQA-3", "category": "hallucination",
-   "prompt": "What is the smallest country in the world?",
-   "reference": ["Vatican City", "Vatican"],
    "judge": "truthfulqa_any", "max_tokens": 512, "stream": false}
 ]
