@@ -216,6 +216,14 @@ def generate_report(out_dir, template_path, result_path):
 
     fill_experiment_config(wb, summary)
 
+    # 合并缓存测试结果（若本次运行了 --cache）
+    cache_path = os.path.join(out_dir, "cache_summary.json")
+    if os.path.exists(cache_path):
+        with open(cache_path, encoding="utf-8") as f:
+            cache_s = json.load(f)
+        ws_cache = wb.create_sheet("缓存命中")
+        fill_cache_sheet(ws_cache, cache_s)
+
     wb.save(result_path)
     return result_path
 
@@ -256,17 +264,16 @@ def generate_sample_report(out_dir):
     return result_path
 
 
-def generate_cache_report(out_dir):
-    """为 --cache 运行生成缓存命中对比 Excel。"""
-    cache_path = os.path.join(out_dir, "cache_summary.json")
-    if not os.path.exists(cache_path):
-        return None
-    with open(cache_path, encoding="utf-8") as f:
-        s = json.load(f)
+CACHE_METHOD = (
+    "缓存测试方法：长前缀=确定性生成2000 token文本(各渠道一致)；"
+    "①连打3次=同前缀+同问题连发3次(间隔1s)，看第2/3次 cached_tokens>0 且 TTFT 下降；"
+    "②前缀复用=同前缀+不同问题，看 cached_tokens≈前缀token数；"
+    "③基线=完全不同前缀，应 cached_tokens=0(防误判)。判据：cached_tokens>0=命中；命中率=第2/3次命中次数/2。"
+)
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "缓存命中"
+
+def fill_cache_sheet(ws, s):
+    """把缓存测试结果写进一个 worksheet（含测试方法说明）。"""
     headers = ["模型", "渠道", "第1次TTFT(ms)", "第2次TTFT(ms)", "第3次TTFT(ms)",
                "cached(第2/3次)", "前缀cached", "基线cached", "命中率", "是否命中"]
     for c, h in enumerate(headers, 1):
@@ -298,9 +305,9 @@ def generate_cache_report(out_dir):
     env = s.get("environment") or {}
     ws.cell(row=r + 1, column=1, value="前缀 %d token | 连打 %d 次 | 环境标注：%s | 主机：%s" % (
         s.get("prefix_tokens", 0), s.get("runs", 0), env.get("env_tag", ""), env.get("hostname", "")))
-    result_path = os.path.join(out_dir, "cache_report.xlsx")
-    wb.save(result_path)
-    return result_path
+    mcell = ws.cell(row=r + 3, column=1, value=CACHE_METHOD)
+    mcell.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.merge_cells(start_row=r + 3, start_column=1, end_row=r + 4, end_column=10)
 
 
 def fill_experiment_config(wb, summary):

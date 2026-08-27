@@ -1134,16 +1134,7 @@ def run_cache(providers, cfg, out_dir, env_tag=""):
                "environment": env, "rows": rows}
     with open(os.path.join(out_dir, "cache_summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
-    print("缓存结果已写入：%s" % os.path.join(os.path.abspath(out_dir), "cache_summary.json"))
-
-    # 自动生成缓存命中 Excel
-    try:
-        from export_report import generate_cache_report
-        rp = generate_cache_report(out_dir)
-        if rp:
-            print("缓存报告已生成：%s" % os.path.abspath(rp))
-    except Exception as e:
-        print("[提示] 自动生成缓存 Excel 失败：%s" % e)
+    print("缓存结果已写入：%s（将合并进最终 report.xlsx）" % os.path.join(os.path.abspath(out_dir), "cache_summary.json"))
 
 
 def main():
@@ -1203,10 +1194,9 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
         print("本次结果输出目录：%s" % os.path.abspath(out_dir))
 
-    # 缓存命中专项测试
+    # 缓存命中专项测试（附加模式：先跑缓存，再继续常规测试，最终合并进同一份 report.xlsx）
     if args.cache:
         run_cache(providers, cfg, out_dir, args.env_tag)
-        return
 
     # 示例模式：复用性能层第 1 条用例，每个组合只跑 1 次，跑完即返回
     if args.sample:
