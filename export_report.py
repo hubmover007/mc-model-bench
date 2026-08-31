@@ -266,39 +266,45 @@ def generate_sample_report(out_dir):
 
 CACHE_METHOD = (
     "缓存测试方法：长前缀=确定性生成2000 token文本(各渠道一致)；"
-    "①连打3次=同前缀+同问题连发3次(间隔1s)，看第2/3次 cached_tokens>0 且 TTFT 下降；"
-    "②前缀复用=同前缀+不同问题，看 cached_tokens≈前缀token数；"
-    "③基线=完全不同前缀，应 cached_tokens=0(防误判)。判据：cached_tokens>0=命中；命中率=第2/3次命中次数/2。"
+    "session=按「渠道×模型」分，连打+前缀复用共用同一 session(粘住节点消除路由漂移)、基线独立 session(不支持 session_id 则自动去 session 重试)。"
+    "①连打5次=同前缀+同问题连发5次(间隔1s)：run1 记 cache_write_tokens(建立缓存)，run2~5 看 cached_tokens>0 计重复命中；"
+    "②前缀复用=同前缀+不同问题(同 session)，看 cached_tokens>0 且 >基线；"
+    "③基线=完全不同前缀(独立 session)，应 cached_tokens=0。"
+    "判据：cached=null 按 0(未命中)归一；重复命中=run2~5 命中次数/4；前缀复用=前缀cached>0 且 >基线；基线>0 → 字段不可信。"
 )
 
 
 def fill_cache_sheet(ws, s):
     """把缓存测试结果写进一个 worksheet（含测试方法说明）。"""
-    headers = ["模型", "渠道", "第1次TTFT(ms)", "第2次TTFT(ms)", "第3次TTFT(ms)",
-               "cached(第2/3次)", "前缀cached", "基线cached", "命中率", "是否命中"]
+    headers = ["模型", "渠道", "首写tokens", "重复命中", "cached(2~N)", "前缀cached", "基线cached",
+               "前缀复用", "session", "缓存类型"]
     for c, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=c, value=h)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
         cell.alignment = Alignment(horizontal="center", vertical="center")
-    for i, w in enumerate([16, 12, 12, 12, 12, 14, 12, 12, 10, 10], 1):
+    for i, w in enumerate([16, 12, 10, 10, 14, 12, 12, 10, 10, 26], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
 
-    def ttft(sp, i):
-        return sp[i - 1].get("ttft_ms") if len(sp) >= i else None
-
-    def cached(sp, i):
-        return sp[i - 1].get("cached_tokens") if len(sp) >= i else None
-
     r = 2
+    runs_minus_1 = int(s.get("runs", 5)) - 1
     for row in s.get("rows", []):
         sp = row.get("same_prompt", [])
+        write_tk = row.get("cache_write_tokens")
+        write_disp = "-" if write_tk is None else write_tk
+        hit_vals = [sp[i].get("cached_tokens") or 0 for i in range(1, len(sp))]
+        uniq = sorted(set(hit_vals))
+        cached_disp = uniq[0] if len(uniq) == 1 else " / ".join(str(v) for v in hit_vals)
         pr = row.get("prefix_reuse", {}).get("cached_tokens")
         bl = row.get("baseline", {}).get("cached_tokens")
-        vals = [row.get("model_id"), row.get("channel_name"), ttft(sp, 1), ttft(sp, 2), ttft(sp, 3),
-                "%s / %s" % (cached(sp, 2), cached(sp, 3)), pr, bl,
-                row.get("hit_rate", ""), "是" if row.get("hit") else "否"]
+        repeat_hits = sum(1 for c in hit_vals if (c or 0) > 0)
+        repeat_disp = "%d/%d" % (repeat_hits, runs_minus_1)
+        sess = row.get("session_id_supported")
+        sess_disp = "是" if sess is True else ("否" if sess is False else "未验证")
+        vals = [row.get("model_id"), row.get("channel_name"), write_disp, repeat_disp, cached_disp,
+                pr if pr is not None else 0, bl if bl is not None else 0,
+                "是" if row.get("prefix_hit") else "否", sess_disp, row.get("cache_type", "")]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
         r += 1

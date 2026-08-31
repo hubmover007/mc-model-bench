@@ -260,7 +260,7 @@ class ApiError(Exception):
 def extract_usage_fields(usage):
     """统一抽取 usage 相关字段，兼容不同渠道的字段位置差异。"""
     out = {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
-           "reasoning_tokens": None, "cached_tokens": None}
+           "reasoning_tokens": None, "cached_tokens": None, "cache_write_tokens": None}
     if not usage:
         return out
     out["prompt_tokens"] = usage.get("prompt_tokens")
@@ -274,6 +274,9 @@ def extract_usage_fields(usage):
     out["cached_tokens"] = ptd.get("cached_tokens")
     if out["cached_tokens"] is None:
         out["cached_tokens"] = usage.get("cached_tokens")
+    out["cache_write_tokens"] = ptd.get("cache_write_tokens")
+    if out["cache_write_tokens"] is None:
+        out["cache_write_tokens"] = usage.get("cache_write_tokens")
     return out
 
 
@@ -284,7 +287,7 @@ def compute_metrics(timeline, reasoning_timeline, full_text, reasoning_text, usa
          "generation_ms": None, "tokens_per_sec": None, "chunk_count": 0, "reasoning_chunk_count": len(reasoning_timeline),
          "chunk_size": None, "chunk_interval_ms": None,
          "prompt_tokens": u["prompt_tokens"], "completion_tokens": u["completion_tokens"], "total_tokens": u["total_tokens"],
-         "reasoning_tokens": u["reasoning_tokens"], "cached_tokens": u["cached_tokens"],
+         "reasoning_tokens": u["reasoning_tokens"], "cached_tokens": u["cached_tokens"], "cache_write_tokens": u["cache_write_tokens"],
          "content_chars": len(full_text), "reasoning_chars": len(reasoning_text),
          "finish_reason": finish_reason, "http_status": status_code}
 
@@ -1046,35 +1049,70 @@ def run_sample(providers, cfg, out_dir, sample_case, env_tag=""):
 # ---------------------------------------------------------------------------
 
 CACHE_PREFIX_TOKENS = 2000
-CACHE_RUNS = 3
+CACHE_RUNS = 5  # 连打次数：run1 建立缓存(cache_write)，run2~5 测命中
+
+
+def _cached(v):
+    """cached_tokens null→0 归一化：None 按未命中(0)处理。"""
+    if v is None:
+        return 0
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def classify_cache(same_prompt, prefix_cached, baseline_cached, repeat_hit, prefix_hit):
+    """缓存类型自动归类（字段可信度前置）。"""
+    pr = _cached(prefix_cached)
+    bl = _cached(baseline_cached)
+    # 1. 字段可信度：基线>0 说明「完全不同前缀」也报命中，cached 字段语义异常，不可信
+    if bl > 0:
+        return "字段不可信"
+    # 2. 前缀复用命中（cached>0 且 >基线）且重复也命中 → 真前缀缓存
+    if prefix_hit and repeat_hit > 0:
+        return "前缀缓存"
+    # 3. 重复命中、但前缀复用未命中 → 精确匹配缓存（换问题整体 miss）
+    if repeat_hit > 0 and not prefix_hit:
+        return "精确匹配缓存(无前缀复用)"
+    # 4. 连打完全没命中、换问题反而命中 → 反常，需复测/疑似路由漂移
+    if prefix_hit and repeat_hit == 0:
+        return "反常(连打miss但前缀命中)"
+    return "无缓存"
 
 
 def render_cache_table(rows):
-    print("\n" + "=" * 112)
-    print("  缓存命中测试结果（前缀 %d token，连打 %d 次）" % (CACHE_PREFIX_TOKENS, CACHE_RUNS))
-    print("=" * 112)
-    print("%-16s %-10s %-11s %-11s %-11s %-13s %-12s %-12s %s" % (
-        "模型", "渠道", "第1次TTFT", "第2次TTFT", "第3次TTFT", "cached(2/3)", "前缀cached", "基线cached", "命中"))
-    print("-" * 112)
+    print("\n" + "=" * 140)
+    print("  缓存命中测试结果（前缀 %d token，连打 %d 次：run1 建缓存，run2~%d 测命中）" % (
+        CACHE_PREFIX_TOKENS, CACHE_RUNS, CACHE_RUNS))
+    print("=" * 140)
+    print("%-14s %-9s %-9s %-9s %-14s %-11s %-11s %-9s %-9s %s" % (
+        "模型", "渠道", "首写tokens", "重复命中", "cached(2~N)", "前缀cached", "基线cached", "前缀复用", "session", "缓存类型"))
+    print("-" * 140)
     for r in rows:
         sp = r.get("same_prompt", [])
-
-        def ttft(i):
-            return sp[i - 1].get("ttft_ms") if len(sp) >= i and sp[i - 1].get("ttft_ms") is not None else "-"
-
-        cached23 = " / ".join(str(sp[i - 1].get("cached_tokens")) if len(sp) >= i else "-" for i in (2, 3))
-        pr = r.get("prefix_reuse", {}).get("cached_tokens")
-        bl = r.get("baseline", {}).get("cached_tokens")
-        print("%-16s %-10s %-11s %-11s %-11s %-13s %-12s %-12s %s" % (
-            r.get("model_id"), r.get("channel_name"), ttft(1), ttft(2), ttft(3),
-            cached23, pr if pr is not None else "-", bl if bl is not None else "-",
-            "✅" if r.get("hit") else "❌"))
-    print("\n说明：cached_tokens>0 表示命中；前缀cached≈前缀token数表示前缀复用命中；基线应为0（防误判）。\n")
+        write_tk = r.get("cache_write_tokens")
+        write_disp = "-" if write_tk is None else str(write_tk)
+        hit_vals = [_cached(s.get("cached_tokens")) for s in sp[1:]]
+        uniq = sorted(set(hit_vals))
+        cached_disp = str(uniq[0]) if len(uniq) == 1 else " / ".join(str(v) for v in hit_vals)
+        pr = _cached(r.get("prefix_reuse", {}).get("cached_tokens"))
+        bl = _cached(r.get("baseline", {}).get("cached_tokens"))
+        repeat_hits = sum(1 for c in hit_vals if c > 0)
+        repeat_disp = "%d/%d" % (repeat_hits, CACHE_RUNS - 1)
+        sess = r.get("session_id_supported")
+        sess_disp = "是" if sess is True else ("否" if sess is False else "未验证")
+        print("%-14s %-9s %-9s %-9s %-14s %-11s %-11s %-9s %-9s %s" % (
+            r.get("model_id"), r.get("channel_name"), write_disp, repeat_disp, cached_disp,
+            pr, bl, "✅" if r.get("prefix_hit") else "❌", sess_disp, r.get("cache_type", "-")))
+    print("\n说明：首写=run1 的 cache_write_tokens(建立缓存)；重复命中=run2~%d 中 cached>0 的次数/%d；"
+          "cached 为 null 按 0(未命中)归一；前缀复用=前缀cached>0 且 >基线(增量)；基线>0 → 字段不可信；"
+          "session=该渠道是否接受 session_id(否=自动去 session 重试)。\n" % (CACHE_RUNS, CACHE_RUNS - 1))
 
 
 def run_cache(providers, cfg, out_dir, env_tag=""):
-    print("[缓存测试] 每个「模型×渠道」组合：长前缀连打 %d 次 + 前缀复用 + 基线，共 %d 个组合" % (
-        CACHE_RUNS, len(providers)))
+    print("[缓存测试] 每个「模型×渠道」组合：长前缀连打 %d 次(run1 建缓存, run2~%d 测命中) + 前缀复用 + 基线，共 %d 个组合" % (
+        CACHE_RUNS, CACHE_RUNS, len(providers)))
     env = env_info(env_tag)
     prefix_a = build_filler(int(CACHE_PREFIX_TOKENS * 1.2), stable_seed("cache_prefix_a"))
     prefix_b = build_filler(int(CACHE_PREFIX_TOKENS * 1.2), stable_seed("cache_prefix_b"))
@@ -1083,43 +1121,73 @@ def run_cache(providers, cfg, out_dir, env_tag=""):
     to = cfg.get("timeouts", {})
     timeout = (to.get("connect_seconds", 10), to.get("read_seconds", 180))
 
-    def call(p, prefix, question):
-        case = {"id": "cache_tmp", "prompt": prefix + "\n\n" + question, "stream": True, "max_tokens": 512}
-        body = build_request_body(p, case, cfg.get("shared_request_params", {}), cfg.get("reasoning_max_tokens", 16384))
-        url = p["base_url"].rstrip("/") + "/chat/completions"
-        headers = {"Authorization": "Bearer " + resolve_api_key(p), "Content-Type": "application/json"}
-        try:
-            return run_stream(url, headers, body, timeout)
-        except ApiError as e:
-            return {"error": {"type": e.kind, "message": str(e)[:200]}}
-
     rows = []
     for p in providers:
         entry = {"model_id": p["model_id"], "channel_id": p["channel_id"], "channel_name": p["channel_name"],
                  "model": p["model"], "base_url": p["base_url"]}
-        # 用例1：相同 prompt 连打
+        # session 设计：按「渠道×模型」分；连打+前缀复用共用一个 session（共享长前缀，粘住同一节点），基线独立 session
+        base_session = "%s_%s_cache" % (p["channel_id"], p["model_id"])
+        session_shared = base_session + "_shared"
+        session_baseline = base_session + "_baseline"
+        session_supported = None  # None=未探测 / True=支持 / False=不支持(自动 fallback)
+
+        def call(p, prefix, question, session_id=None):
+            nonlocal session_supported
+            case = {"id": "cache_tmp", "prompt": prefix + "\n\n" + question, "stream": True, "max_tokens": 512}
+            body = build_request_body(p, case, cfg.get("shared_request_params", {}), cfg.get("reasoning_max_tokens", 16384))
+            url = p["base_url"].rstrip("/") + "/chat/completions"
+            headers = {"Authorization": "Bearer " + resolve_api_key(p), "Content-Type": "application/json"}
+            if session_id and session_supported is not False:
+                body["session_id"] = session_id
+            try:
+                r = run_stream(url, headers, body, timeout)
+                if session_id and session_supported is None:
+                    session_supported = True  # 带 session 请求成功 → 支持
+                return r
+            except ApiError as e:
+                if session_id and session_supported is None and e.http_status in (400, 422):
+                    session_supported = False  # session_id 不被支持，fallback 重试
+                    body.pop("session_id", None)
+                    try:
+                        return run_stream(url, headers, body, timeout)
+                    except ApiError as e2:
+                        return {"error": {"type": e2.kind, "message": str(e2)[:200]}}
+                return {"error": {"type": e.kind, "message": str(e)[:200]}}
+
+        # 用例1：相同 prompt 连打（run1 建立缓存，run2~N 测命中）
         same = []
         for i in range(CACHE_RUNS):
-            r = call(p, prefix_a, q1)
+            r = call(p, prefix_a, q1, session_shared)
             m = (r.get("metrics") or {}) if not r.get("error") else {}
             same.append({"run": i + 1, "ttft_ms": m.get("ttft_ms"), "e2e_ms": m.get("e2e_ms"),
-                         "cached_tokens": m.get("cached_tokens"), "prompt_tokens": m.get("prompt_tokens"),
-                         "error": r.get("error")})
+                         "cached_tokens": m.get("cached_tokens"), "cache_write_tokens": m.get("cache_write_tokens"),
+                         "prompt_tokens": m.get("prompt_tokens"), "error": r.get("error")})
             time.sleep(1)
         entry["same_prompt"] = same
-        # 用例2：前缀复用（同前缀换问题）
-        r2 = call(p, prefix_a, q2)
+        # 用例2：前缀复用（同 session、同前缀、换问题）
+        r2 = call(p, prefix_a, q2, session_shared)
         m2 = (r2.get("metrics") or {}) if not r2.get("error") else {}
-        entry["prefix_reuse"] = {"cached_tokens": m2.get("cached_tokens"), "prompt_tokens": m2.get("prompt_tokens"),
-                                 "ttft_ms": m2.get("ttft_ms"), "error": r2.get("error")}
-        # 用例3：基线（不同前缀，应不命中）
-        r3 = call(p, prefix_b, q1)
+        entry["prefix_reuse"] = {"cached_tokens": m2.get("cached_tokens"), "cache_write_tokens": m2.get("cache_write_tokens"),
+                                 "prompt_tokens": m2.get("prompt_tokens"), "ttft_ms": m2.get("ttft_ms"), "error": r2.get("error")}
+        # 用例3：基线（独立 session、不同前缀，应不命中）
+        r3 = call(p, prefix_b, q1, session_baseline)
         m3 = (r3.get("metrics") or {}) if not r3.get("error") else {}
-        entry["baseline"] = {"cached_tokens": m3.get("cached_tokens"), "prompt_tokens": m3.get("prompt_tokens"),
-                             "ttft_ms": m3.get("ttft_ms"), "error": r3.get("error")}
-        hits = [1 for s in same[1:] if (s.get("cached_tokens") or 0) > 0]
-        entry["hit_rate"] = "%d/%d" % (len(hits), max(1, CACHE_RUNS - 1))
-        entry["hit"] = len(hits) > 0
+        entry["baseline"] = {"cached_tokens": m3.get("cached_tokens"), "cache_write_tokens": m3.get("cache_write_tokens"),
+                             "prompt_tokens": m3.get("prompt_tokens"), "ttft_ms": m3.get("ttft_ms"), "error": r3.get("error")}
+        # —— 指标判定：null→0 归一化后拆分 repeat_hit / prefix_hit ——
+        hit_vals = [_cached(s.get("cached_tokens")) for s in same[1:]]  # run2~N 的命中值
+        repeat_hits = sum(1 for c in hit_vals if c > 0)
+        repeat_hit = repeat_hits / float(max(1, CACHE_RUNS - 1))  # 0.0 ~ 1.0
+        pr = _cached(entry["prefix_reuse"].get("cached_tokens"))
+        bl = _cached(entry["baseline"].get("cached_tokens"))
+        prefix_hit = pr > 0 and pr > bl                     # 增量命中：>0 且 > 基线
+        entry["session_id_supported"] = session_supported   # 待验证项：EasyRouter 是否支持 session_id
+        entry["cache_write_tokens"] = same[0].get("cache_write_tokens") if same else None  # run1 首次写入
+        entry["repeat_hit"] = repeat_hit
+        entry["prefix_hit"] = prefix_hit
+        entry["hit"] = repeat_hit > 0
+        entry["cache_type"] = classify_cache(same, pr, bl, repeat_hit, prefix_hit)
+        entry["cached_trusted"] = entry["cache_type"] != "字段不可信"
         rows.append(entry)
         layer_dir = os.path.join(out_dir, "raw", "cache")
         os.makedirs(layer_dir, exist_ok=True)
@@ -1130,8 +1198,18 @@ def run_cache(providers, cfg, out_dir, env_tag=""):
                        "environment": env, "cache_result": entry}, f, ensure_ascii=False, indent=2)
 
     render_cache_table(rows)
-    summary = {"mode": "cache", "prefix_tokens": CACHE_PREFIX_TOKENS, "runs": CACHE_RUNS,
-               "environment": env, "rows": rows}
+    summary = {
+        "mode": "cache", "prefix_tokens": CACHE_PREFIX_TOKENS, "runs": CACHE_RUNS,
+        "null_normalized": True,
+        "session_design": "连打+前缀复用共用 session（{渠道}_{模型}_cache_shared），基线独立 session；不支持 session_id 时自动 fallback",
+        "metrics": {
+            "cache_write_tokens": "run1 首次写入(建立缓存)的 token 数",
+            "repeat_hit": "same_prompt run2~%d 中 cached_tokens>0 的次数 / %d" % (CACHE_RUNS, CACHE_RUNS - 1),
+            "prefix_hit": "prefix_reuse.cached_tokens>0 且 > baseline（增量命中）",
+        },
+        "cache_types": ["字段不可信", "前缀缓存", "精确匹配缓存(无前缀复用)", "反常(连打miss但前缀命中)", "无缓存"],
+        "environment": env, "rows": rows,
+    }
     with open(os.path.join(out_dir, "cache_summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
     print("缓存结果已写入：%s（将合并进最终 report.xlsx）" % os.path.join(os.path.abspath(out_dir), "cache_summary.json"))
