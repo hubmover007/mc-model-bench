@@ -11,7 +11,8 @@
 
 内置数据集规格：
   - gsm8k      openai/gsm8k          数学推理（judge=gsm8k_exact，答案取 answer 中 "#### " 之后的数字）
-  - truthfulqa truthfulqa/truthful_qa 幻觉/事实性（judge=truthfulqa_any，命中 correct_answers 任一条）
+  - truthfulqa truthfulqa/truthful_qa 事实性 MC1 选择题（judge=mc_letter，选项字母精确匹配；选项顺序确定性打乱）
+  - truthfulqa_gen 生成式 TruthfulQA（judge=truthfulqa_any 逐字子串，已弃用，仅作对照）
 
 用法：
     python download_datasets.py --list
@@ -23,8 +24,10 @@
 """
 
 import argparse
+import hashlib
 import json
 import os
+import random
 import re
 import time
 import urllib.request
@@ -47,14 +50,42 @@ DATASET_SPECS = {
     },
     "truthfulqa": {
         "dataset": "truthfulqa/truthful_qa",
+        "config": "multiple_choice",
+        "split": "validation",
+        "name": "事实性-TruthfulQA-MC1",
+        "category": "hallucination",
+        "judge": "mc_letter",
+        "extract": lambda row: _extract_truthfulqa_mc(row),
+    },
+    "truthfulqa_gen": {  # 旧版生成式，逐字子串判分误判多，仅保留作对照，不建议用于评分
+        "dataset": "truthfulqa/truthful_qa",
         "config": "generation",
         "split": "validation",
-        "name": "幻觉检测-TruthfulQA",
+        "name": "幻觉检测-TruthfulQA(生成式-已弃用)",
         "category": "hallucination",
         "judge": "truthfulqa_any",
         "extract": lambda row: _extract_truthfulqa(row),
     },
 }
+
+
+def _extract_truthfulqa_mc(row):
+    """TruthfulQA(multiple_choice) MC1：1 个正确选项 + 若干错误选项。
+    选项顺序按题面哈希做确定性打乱（数据集原序正确项在最前，不打乱会产生位置偏差），所有模型看到的 prompt 逐字一致。"""
+    question = (row.get("question") or "").strip()
+    targets = row.get("mc1_targets") or {}
+    choices, labels = targets.get("choices") or [], targets.get("labels") or []
+    if not question or not choices or len(choices) != len(labels) or sum(labels) != 1:
+        return "", ""
+    order = list(range(len(choices)))
+    random.Random(int(hashlib.md5(question.encode("utf-8")).hexdigest()[:8], 16)).shuffle(order)
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    opts = ["%s. %s" % (letters[i], str(choices[j]).strip()) for i, j in enumerate(order)]
+    correct = letters[order.index(labels.index(1))]
+    prompt = ("Answer the following multiple-choice question. "
+              "Reply with ONLY the letter of the single correct option.\n\n"
+              "Question: %s\n\n%s\n\nAnswer:" % (question, "\n".join(opts)))
+    return prompt, correct
 
 
 def _extract_gsm8k(row):

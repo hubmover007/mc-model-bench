@@ -36,6 +36,7 @@ import socket
 import statistics
 import sys
 import time
+from decimal import Decimal, InvalidOperation
 
 try:
     import requests
@@ -48,7 +49,7 @@ LAYERS = ("performance", "compatibility", "quality", "long_context")
 LAYER_DESC = {
     "performance": "性能基准层：短/长输入 × 短/长输出 四象限，测 TTFT、生成速度、端到端延迟、chunk 分布",
     "compatibility": "功能兼容层：SSE 格式 / stop / max_tokens / temperature / Function Calling / JSON mode / 多轮 / system 提示词",
-    "quality": "质量层：数学推理(GSM8K) + 幻觉事实性(TruthfulQA)，judge 判分正确率",
+    "quality": "质量层：数学推理(GSM8K 数值精确匹配) + 事实性选择题(TruthfulQA MC1 选项字母匹配)，程序化判分；content 为空时回退读 reasoning",
     "long_context": "长上下文专项：大海捞针 10K/32K/64K/128K，输入按 target_tokens 生成，输出 max_tokens=4096",
 }
 
@@ -438,19 +439,93 @@ def normalize(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
+def pick_answer(result):
+    """取用于判分的答案文本，返回 (text, source)。
+
+    source: content（正常）/ reasoning（content 为空，回退取 reasoning 字段）/
+            truncated（content 为空且 finish_reason=length，输出被截断，不给回退）/ empty。
+    部分推理模型偶发把最终答案写进 reasoning 通道而 content 为空（finish_reason=stop），
+    只看 content 会把「答对了但放错通道」误判成答错；这类情况改为「判分通过 + 记一次答案落错通道」。
+    """
+    o = (result or {}).get("output") or {}
+    content = o.get("text") or ""
+    if content.strip():
+        return content, "content"
+    reasoning = o.get("reasoning") or ""
+    finish = ((result or {}).get("metrics") or {}).get("finish_reason")
+    if reasoning.strip():
+        if finish == "length":
+            return "", "truncated"
+        return reasoning, "reasoning"
+    return "", "empty"
+
+
+_NUM = r"[-+]?\$?\s*\d[\d,]*(?:\.\d+)?"
+
+
+def _to_decimal(s):
+    try:
+        return Decimal(re.sub(r"[\s$,]", "", str(s)))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def extract_final_number(text):
+    """按优先级取最终数值：\\boxed{} > '#### ' > '答案是/answer is' 之后 > 全文最后一个数字。返回 (原文, 方式)。"""
+    text = text or ""
+    boxed = re.findall(r"\\boxed\{([^{}]*)\}", text)
+    if boxed:
+        nums = re.findall(_NUM, boxed[-1])
+        if nums:
+            return nums[-1], "boxed"
+    hashes = re.findall(r"####\s*(" + _NUM + ")", text)
+    if hashes:
+        return hashes[-1], "####"
+    phrase = re.findall(r"(?i:final answer|answer is|the answer|答案是|答案为|答案[:：])[^\d\-+$]{0,30}(" + _NUM + ")", text)
+    if phrase:
+        return phrase[-1], "answer_phrase"
+    nums = re.findall(_NUM, text)
+    if nums:
+        return nums[-1], "last_number"
+    return None, "none"
+
+
+def extract_choice_letter(text):
+    """从选择题回答里提取选项字母。返回 (字母, 方式)，提取不到返回 (None, 'none')。"""
+    text = (text or "").strip()
+    m = re.fullmatch(r"\W*\(?([A-Z])\)?\W*", text)
+    if m:
+        return m.group(1), "whole"
+    boxed = re.findall(r"\\boxed\{\s*\(?([A-Z])\)?\s*\}", text)
+    if boxed:
+        return boxed[-1], "boxed"
+    phrase = re.findall(r"(?i:final answer|answer is|the answer|answer:|答案是|答案为|答案[:：]|选择|应选)\s*[:：]?\s*\(?\*{0,2}([A-Z])(?![A-Za-z])", text)
+    if phrase:
+        return phrase[-1], "answer_phrase"
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if lines:
+        m = re.match(r"\W*\(?([A-Z])\)?(?:[.)：:\s]|$)", lines[-1])
+        if m:
+            return m.group(1), "last_line"
+    return None, "none"
+
+
 def judge_answer(case, output):
     judge = case.get("judge")
     ref = case.get("reference")
     if judge == "gsm8k_exact":
-        nums = re.findall(r"[-+]?\d[\d,]*", output or "")
-        if not nums:
+        raw, how = extract_final_number(output)
+        if raw is None:
             return False, "输出中无数字，无法判分"
-        last = nums[-1].replace(",", "")
-        try:
-            ok = int(last) == int(str(ref).replace(",", ""))
-        except ValueError:
-            return False, "数字解析失败：输出=%s 参考=%s" % (last, ref)
-        return ok, "末位数字=%s，参考=%s" % (last, ref)
+        got, want = _to_decimal(raw), _to_decimal(ref)
+        if got is None or want is None:
+            return False, "数字解析失败：输出=%s 参考=%s" % (raw, ref)
+        return got == want, "提取=%s（%s），参考=%s" % (raw.strip(), how, ref)
+    if judge == "mc_letter":
+        letter, how = extract_choice_letter(output)
+        if letter is None:
+            return False, "未能从输出中提取选项字母，参考=%s" % ref
+        return letter == str(ref).strip().upper(), "提取=%s（%s），参考=%s" % (letter, how, ref)
     if judge == "truthfulqa_any":
         refs = ref if isinstance(ref, list) else [ref]
         norm_out = normalize(output or "")
@@ -477,9 +552,16 @@ def validate_case(case, result):
         return {"passed": False, "checks": checks}
 
     if case.get("judge"):
-        ok, detail = judge_answer(case, out)
+        ans, src = pick_answer(result)
+        ok, detail = judge_answer(case, ans)
+        if src == "truncated":
+            detail += "（content 为空且 finish_reason=length：输出被截断）"
         checks.append({"name": "judge_%s" % case.get("judge"), "severity": "pass" if ok else "fail", "detail": detail})
-        return {"passed": ok, "checks": checks}
+        misplaced = (src == "reasoning")
+        if misplaced:
+            checks.append({"name": "answer_channel", "severity": "warn",
+                           "detail": "content 为空，答案取自 reasoning 字段（答案落错通道，对只读 content 的下游是缺陷）"})
+        return {"passed": ok, "checks": checks, "misplaced_answer": misplaced, "answer_source": src}
 
     if feature == "stream_sse":
         issues = (result.get("sse") or {}).get("issues") or []
@@ -546,14 +628,21 @@ def validate_case(case, result):
         checks.append({"name": "prefix", "severity": "pass" if prefix and out.startswith(prefix) else "fail",
                        "detail": ("以“%s”开头" % prefix) if prefix and out.startswith(prefix) else "未以“%s”开头，实际：%s" % (prefix, out[:60])})
 
+    misplaced = False
     if case.get("needle"):
+        ans, src = pick_answer(result)
         kw = case.get("expect_contains", "")
-        found = kw and kw in out
+        found = bool(kw) and kw in ans
         checks.append({"name": "needle_retrieval", "severity": "pass" if found else "fail",
-                       "detail": ("检索到“%s”" % kw) if found else ("未检索到“%s”，实际：%s" % (kw, out[:120]))})
+                       "detail": ("检索到“%s”" % kw) if found else ("未检索到“%s”，实际：%s%s" % (
+                           kw, ans[:120], "（content 为空且 finish_reason=length：输出被截断）" if src == "truncated" else ""))})
+        misplaced = (src == "reasoning") and found
+        if misplaced:
+            checks.append({"name": "answer_channel", "severity": "warn",
+                           "detail": "content 为空，答案取自 reasoning 字段（答案落错通道，对只读 content 的下游是缺陷）"})
 
     failed = [c for c in checks if c.get("severity") == "fail"]
-    return {"passed": not failed, "checks": checks}
+    return {"passed": not failed, "checks": checks, "misplaced_answer": misplaced}
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +709,7 @@ def aggregate(rows, providers):
             "quality": {"total": 0, "passed": 0, "by_category": {}},
             "long_context": {"total": 0, "run": 0, "passed": 0, "skipped": 0, "by_case": {}},
             "errors": [],
+            "misplaced_answers": 0,
         }
     for r in rows:
         pid = r["meta"]["provider_id"]
@@ -649,6 +739,8 @@ def aggregate(rows, providers):
                 agg["long_context"]["by_case"][cid] = "错误"
             continue
         m = r.get("metrics") or {}
+        if (r.get("validation") or {}).get("misplaced_answer"):
+            agg["misplaced_answers"] += 1
         if layer == "performance":
             agg["performance"]["cases"] += 1
             agg["performance"]["ok"] += 1
@@ -869,6 +961,13 @@ def render_markdown(agg_by_provider, scores, providers, env=None, test_config=No
         rate = ("%.1f%%" % (100.0 * l["passed"] / l["run"])) if l["run"] else "-"
         cells = [l["by_case"].get(cid, "-") for cid in lc_cases]
         lines.append("| %s | %s | %s |" % (p["name"], rate, " | ".join(cells)))
+
+    lines.append("\n### 答案落错通道（content 为空、答案在 reasoning 字段）\n")
+    lines.append("判分已对这类情况回退取 reasoning（不再误判答错），但对只读 content 的下游仍是缺陷，单独计数：\n")
+    lines.append("| 模型@渠道 | 次数 |")
+    lines.append("|---|---|")
+    for p in providers:
+        lines.append("| %s | %d |" % (p["name"], agg_by_provider[p["id"]].get("misplaced_answers", 0)))
 
     lines.append("\n## 7. 综合评分（满分 100）\n")
     lines.append("| 模型@渠道 | 性能 | 兼容 | 质量 | 长上下文 | 总评分 |")
