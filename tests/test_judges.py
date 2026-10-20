@@ -151,8 +151,10 @@ class AggregateTest(unittest.TestCase):
     def test_auto_migrate_providers_json(self):
         import argparse
         import json
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
+        import shutil
+        tmp = os.path.join(runner.HERE, "tests", "_tmp_migrate")
+        os.makedirs(tmp, exist_ok=True)
+        try:
             pfile = os.path.join(tmp, "providers.json")
             old_cfg = {
                 "reasoning_max_tokens": 131072,
@@ -172,6 +174,8 @@ class AggregateTest(unittest.TestCase):
             self.assertEqual(saved["score_weights"]["quality"], 0.3)
             self.assertEqual(saved["score_weights"]["compatibility"], 0.2)
             self.assertEqual(saved["reasoning_max_tokens"], 16384)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class MmluExtractTest(unittest.TestCase):
