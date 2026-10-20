@@ -50,24 +50,35 @@ def load_raw_rows(raw_dir):
 def build_detail_rows(rows):
     perf, compat, quality, lc = [], [], [], []
     perf_ttft = {}
+    retry_notes = {}
     for r in rows:
         layer = r.get("_layer")
         meta = r.get("meta", {})
         m = r.get("metrics") or {}
         pid = meta.get("provider_id", "")
+        rc = int(r.get("retry_count") or (max(0, int(r.get("attempt", 1)) - 1)))
+        if rc > 0:
+            st = retry_notes.setdefault(pid, {"retried_cases": 0, "retry_count": 0})
+            st["retry_count"] += rc
+            if not r.get("error"):
+                st["retried_cases"] += 1
+        retry_note = ("重试%d次(总耗时%sms)" % (rc, m.get("total_wall_ms"))) if rc > 0 else ""
         if layer == "performance":
             if r.get("skipped"):
                 perf.append([meta.get("case_id"), meta.get("category"), meta.get("provider_name"),
                              "", "", "", "", "", "", "", "", "", "", "", "skipped", r.get("skip_reason", "")])
             elif r.get("error"):
+                err_msg = r["error"].get("message", "")
+                if rc > 0:
+                    err_msg = "[重试%d次后失败] %s" % (rc, err_msg)
                 perf.append([meta.get("case_id"), meta.get("category"), meta.get("provider_name"),
-                             "", "", "", "", "", "", "", "", "", "", "", r["error"].get("type"), r["error"].get("message", "")])
+                             "", "", "", "", "", "", "", "", "", "", "", r["error"].get("type"), err_msg])
             else:
                 cint = m.get("chunk_interval_ms") or {}
                 perf.append([meta.get("case_id"), meta.get("category"), meta.get("provider_name"),
                              m.get("ttft_ms"), m.get("content_ttft_ms"), m.get("e2e_ms"), m.get("generation_ms"),
                              m.get("completion_tokens"), m.get("tokens_per_sec"), m.get("reasoning_tokens"),
-                             m.get("cached_tokens"), m.get("chunk_count"), cint.get("avg"), cint.get("std"), "", ""])
+                             m.get("cached_tokens"), m.get("chunk_count"), cint.get("avg"), cint.get("std"), "", retry_note])
                 if m.get("ttft_ms") is not None:
                     perf_ttft.setdefault(pid, []).append(m["ttft_ms"])
         elif layer == "compatibility":
@@ -75,23 +86,24 @@ def build_detail_rows(rows):
             checks = v.get("checks") or []
             if r.get("error"):
                 compat.append([meta.get("case_id"), meta.get("compat_feature"), meta.get("provider_name"),
-                               "失败", "请求失败: %s" % r["error"].get("message", "")[:150], "", "请求失败"])
+                               "失败", "请求失败: %s" % r["error"].get("message", "")[:150], "", retry_note or "请求失败"])
             else:
                 detail = "；".join("%s：%s" % (c.get("name"), c.get("detail")) for c in checks if c.get("severity") in ("fail", "warn")) or "正常"
                 compat.append([meta.get("case_id"), meta.get("compat_feature"), meta.get("provider_name"),
-                               "通过" if v.get("passed") else "失败", detail, m.get("completion_tokens"), ""])
+                               "通过" if v.get("passed") else "失败", detail, m.get("completion_tokens"), retry_note])
         elif layer == "quality":
             v = r.get("validation") or {}
             checks = v.get("checks") or []
-            out = (r.get("output") or {}).get("text") or ""
+            out = (r.get("output") or {}).get("text") or (r.get("output") or {}).get("reasoning") or ""
             reference = json.dumps(meta.get("reference"), ensure_ascii=False) if meta.get("reference") else ""
             detail = "；".join("%s：%s" % (c.get("name"), c.get("detail")) for c in checks)
+            note = "；".join(x for x in [retry_note, "答案取自reasoning" if v.get("misplaced_answer") else ""] if x)
             quality.append([meta.get("case_id"), meta.get("category"), meta.get("provider_name"),
-                            "通过" if v.get("passed") else "失败", detail, reference, out[:120], ""])
+                            "通过" if v.get("passed") else "失败", detail, reference, out[:120], note])
         elif layer == "long_context":
             v = r.get("validation") or {}
             checks = v.get("checks") or []
-            out = (r.get("output") or {}).get("text") or ""
+            out = (r.get("output") or {}).get("text") or (r.get("output") or {}).get("reasoning") or ""
             if r.get("skipped"):
                 lc.append([meta.get("case_id"), meta.get("provider_name"), meta.get("target_tokens"), "跳过",
                            meta.get("depth"), "", "", r.get("skip_reason", "")])
@@ -100,9 +112,11 @@ def build_detail_rows(rows):
                            meta.get("depth"), "", "", r["error"].get("message", "")[:150]])
             else:
                 detail = "；".join("%s：%s" % (c.get("name"), c.get("detail")) for c in checks)
+                if retry_note:
+                    detail = "%s（%s）" % (detail, retry_note)
                 lc.append([meta.get("case_id"), meta.get("provider_name"), meta.get("target_tokens"),
                            "是" if v.get("passed") else "否", meta.get("depth"), out[:80], m.get("completion_tokens"), detail])
-    return perf, compat, quality, lc, perf_ttft
+    return perf, compat, quality, lc, perf_ttft, retry_notes
 
 
 def fill_sheet(ws, rows, num_fmts):
@@ -168,7 +182,7 @@ def generate_report(out_dir, template_path, result_path):
         print("[提示] 未找到 summary.json，已从 raw 兜底重建（参数配置/评分信息可能不完整）")
 
     rows = load_raw_rows(os.path.join(out_dir, "raw"))
-    perf, compat, quality, lc, perf_ttft = build_detail_rows(rows)
+    perf, compat, quality, lc, perf_ttft, retry_notes = build_detail_rows(rows)
 
     wb = openpyxl.load_workbook(template_path)
     fill_sheet(wb["性能明细"], perf, [None, None, None, "0.0", "0.0", "0.0", "0.0", "0", "0.00", "0", "0", "0", "0.0", "0.0", None, None])
@@ -178,18 +192,35 @@ def generate_report(out_dir, template_path, result_path):
 
     ws = wb["汇总表"]
     providers = summary.get("providers", [])
+    agg_map = summary.get("aggregate") or {}
     for i in range(2, 22):
         ws.cell(row=i, column=1).value = None
         ws.cell(row=i, column=3).value = None
         ws.cell(row=i, column=4).value = None
+        ws.cell(row=i, column=11).value = None
     for i, p in enumerate(providers):
         row = i + 2
+        pid = p.get("id")
         ws.cell(row=row, column=1, value=p.get("name"))
-        ttfts = perf_ttft.get(p.get("id"), [])
+        ttfts = perf_ttft.get(pid, [])
         ws.cell(row=row, column=3, value=percentile(ttfts, 0.5))
         ws.cell(row=row, column=4, value=percentile(ttfts, 0.95))
+        rn = retry_notes.get(pid, {})
+        misplaced = (agg_map.get(pid) or {}).get("misplaced_answers", 0)
+        notes_parts = []
+        if rn.get("retry_count"):
+            notes_parts.append("重试%d次(救回%d例)" % (rn["retry_count"], rn.get("retried_cases", 0)))
+        if misplaced:
+            notes_parts.append("答案落reasoning:%d次" % misplaced)
+        if notes_parts:
+            ws.cell(row=row, column=11, value="；".join(notes_parts))
 
     ws2 = wb["评分模型"]
+    w_cfg = (summary.get("score_weights") or (summary.get("test_config") or {}).get("score_weights") or {})
+    if w_cfg:
+        for r_idx, w_key in [(2, "performance"), (3, "compatibility"), (4, "quality"), (5, "long_context")]:
+            if w_key in w_cfg:
+                ws2.cell(row=r_idx, column=13, value=float(w_cfg[w_key]))
     for i in range(2, 22):
         ws2.cell(row=i, column=1).value = None
     for i, p in enumerate(providers):

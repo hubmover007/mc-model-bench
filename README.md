@@ -16,11 +16,11 @@ mc-model-bench/
 │   └── providers.json            # 本地真实配置（含 api key，gitignore，不入库）
 │   └── providers.mock.json       # 本地 mock 自检配置
 ├── test_cases/
-│   ├── performance.json         # 性能基准层（12 条，四象限）
-│   ├── compatibility.json       # 功能兼容层（11 条）
-│   ├── quality.json             # 质量层（GSM8K + TruthfulQA，来自 HF / 兜底样例）
-│   └── long_context.json        # 长上下文专项（大海捞针 10K/32K/64K/128K）
-├── download_datasets.py         # 从 HuggingFace 下载抽取质量层用例（创建代码下载）
+│   ├── performance.json         # 性能基准层（4 条：短/长输入 × 短/长输出 四象限，HF Alpaca+CNN 语料）
+│   ├── compatibility.json       # 功能兼容层（5 条：stream_sse / function_calling / json_mode / system_prompt / stop_param）
+│   ├── quality.json             # 质量评测层（8 条：3 GSM8K 多步数学 + 3 TruthfulQA MC1 + 2 MMLU CS/Logic）
+│   └── long_context.json        # 长上下文专项（3 条：大海捞针 10K@0.25 / 64K@0.75 / 128K@0.50）
+├── download_datasets.py         # 从 HuggingFace 下载抽取四层评测用例（支持 --all 全量刷新）
 ├── runner.py                    # 统一测试执行器
 ├── gen_report_template.py       # 生成报告模板 Excel（含公式）
 ├── report_template.xlsx         # 报告模板
@@ -43,8 +43,9 @@ pip install -r requirements.txt
 export EASYROUTER_API_KEY=sk-...     # Windows: $env:EASYROUTER_API_KEY="sk-..."
 export MAYI_API_KEY=sk-...
 
-# 2. 下载抽取 HuggingFace 质量层用例（可选，离线用自带样例）
-python download_datasets.py --datasets gsm8k,truthfulqa --limit 50
+# 2. 从 HuggingFace 下载抽取评测用例（已自带 20 条非重合评测集；如需重新拉取执行 --all）
+python download_datasets.py --all
+python download_datasets.py --datasets gsm8k,truthfulqa,mmlu_cs,mmlu_logic --offset 35
 
 # 3. 执行（--env-tag 标注测试环境并写入报告，本地/EC2 各跑一次即可区分）
 python runner.py --sample --env-tag "本地笔记本"     # 示例模式：复用性能层第1条，每个组合只跑1次（6次）
@@ -75,12 +76,12 @@ python runner.py --providers-file config/providers.mock.json --out output_mock
 4. **相同顺序**：用例固定顺序逐条依次发给所有渠道，时间戳写入 `output/order.json`。
 5. **环境一致**：同一台机器顺序执行，主机/平台信息写入每个结果文件。
 
-## 评分公式（满分 100，权重可改）
+## 评分公式与权重设计（满分 100，权重可改）
 
-- 性能得分 = 平均(TTFT得分, 速度得分, E2E得分)：TTFT/E2E 越低分越高、速度越高分越高（全渠道最优=100）
-- 兼容得分 = 通过数/总数 × 100
-- 质量得分 = 判分正确数/总数 × 100（GSM8K 数值精确匹配 / TruthfulQA 标准答案命中）
-- 长上下文得分 = 检索成功数/实际执行数 × 100（跳过不计分母）
-- 总评分 = 性能×0.3 + 兼容×0.3 + 质量×0.2 + 长上下文×0.2
+- **性能得分（默认权重 `0.30`，建议范围 `0.25~0.35`）** = 平均(TTFT得分, 速度得分, E2E得分)：TTFT/E2E 越低分越高、速度越高分越高（全渠道最优=100）；同时单独披露 `content_ttft_ms`（内容首字延迟）与重试发生次数。
+- **质量得分（默认权重 `0.30`，建议范围 `0.25~0.35`）** = 判分正确数/总数 × 100（GSM8K 多步数值精确匹配 + TruthfulQA MC1 选择题字母匹配 + MMLU CS/Logic 选择题字母匹配；若 `content` 为空且未截断则自动回退读取 `reasoning` 并单独计数“答案落错通道”）。
+- **兼容得分（默认权重 `0.20`，建议范围 `0.15~0.25`）** = 通过数/总数 × 100（覆盖 `stream_sse`、`function_calling`、`json_mode`、`system_prompt`、`stop_param` 5 项协议契约）。
+- **长上下文得分（默认权重 `0.20`，建议范围 `0.15~0.25`）** = 检索成功数/实际执行数 × 100（覆盖 10K@0.25、64K@0.75、128K@0.50 三档大海捞针，超标称上下文自动跳过不计分母）。
+- **总评分** = `性能×0.3 + 兼容×0.2 + 质量×0.3 + 长上下文×0.2`
 
 详见 `docs/代码解读.md` 与 `docs/差距解读.md`。

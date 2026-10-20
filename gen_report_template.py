@@ -150,7 +150,7 @@ def build_workbook():
                        "长上下文明细：检索成功填 是/否/跳过。"),
         ("2. 汇总表", "TTFT均值/速度/E2E/错误率/兼容率/质量正确率/检索率均为公式；TTFT P50/P95 由 export_report.py 计算写入。"),
         ("3. 评分模型", "性能得分=平均(TTFT,速度,E2E 得分)；兼容得分=通过率×100；质量得分=正确率×100；长上下文得分=检索率×100；\n"
-                       "总评分=性能×0.3+兼容×0.3+质量×0.2+长上下文×0.2（权重在评分模型表 L2:M5 可改）。"),
+                       "总评分=性能×0.3+兼容×0.2+质量×0.3+长上下文×0.2（权重在评分模型表 L2:M5 可改）。"),
         ("注意", "模板预填了两条示例渠道数据用于演示公式，正式使用请用 export_report.py 回填真实结果。"),
     ]
     r = 2
@@ -248,7 +248,7 @@ def build_workbook():
     ws.freeze_panes = "A2"
     ws["L1"] = "权重区（可修改）↓"
     ws["L1"].font = Font(bold=True, color="C00000")
-    weights = [("性能权重", 0.3), ("兼容权重", 0.3), ("质量权重", 0.2), ("长上下文权重", 0.2)]
+    weights = [("性能权重", 0.3), ("兼容权重", 0.2), ("质量权重", 0.3), ("长上下文权重", 0.2)]
     for j, (lab, val) in enumerate(weights, start=2):
         ws.cell(row=j, column=12, value=lab).font = Font(bold=True)
         ws.cell(row=j, column=12).alignment = CENTER

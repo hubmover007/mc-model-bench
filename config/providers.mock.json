@@ -5,7 +5,7 @@
   "reasoning_max_tokens": 16384,
   "timeouts": {"connect_seconds": 5, "read_seconds": 60, "read_seconds_long_context": 120},
   "retries": 1,
-  "score_weights": {"performance": 0.3, "compatibility": 0.3, "quality": 0.2, "long_context": 0.2},
+  "score_weights": {"performance": 0.3, "compatibility": 0.2, "quality": 0.3, "long_context": 0.2},
   "channels": [
     {"id": "mock_a", "name": "Mock渠道A", "base_url": "http://127.0.0.1:18080/v1",
      "api_key": "test-key-a", "api_key_env": "", "supports": {"stream_usage": true}, "notes": ""},

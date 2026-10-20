@@ -15,8 +15,8 @@
   "retries": 2,
   "score_weights": {
     "performance": 0.3,
-    "compatibility": 0.3,
-    "quality": 0.2,
+    "compatibility": 0.2,
+    "quality": 0.3,
     "long_context": 0.2
   },
   "channels": [

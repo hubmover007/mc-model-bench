@@ -1,9 +1,106 @@
 [
-  {"id": "cmp_stream_01", "name": "流式输出-SSE格式校验", "compat_feature": "stream_sse",
-   "prompt": "请用三句话介绍机器学习。", "max_tokens": 200, "stream": true},
-  {"id": "cmp_tools_01", "name": "Function Calling-单工具", "compat_feature": "function_calling",
-   "prompt": "北京今天天气怎么样？请使用可用工具查询。",
-   "tools": [{"type": "function", "function": {"name": "get_weather", "description": "查询指定城市当前天气",
-     "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "城市名，如：北京"}}, "required": ["city"]}}}],
-   "tool_choice": "auto", "max_tokens": 300, "stream": false}
+  {
+    "id": "cmp_stream_hf",
+    "name": "流式输出-SSE格式与DONE校验",
+    "compat_feature": "stream_sse",
+    "source": "rajpurkar/squad_v2:validation#80",
+    "prompt": "Read the passage and summarize it in exactly three sentences:\n\nThe further decline of Byzantine state-of-affairs paved the road to a third attack in 1185, when a large Norman army invaded Dyrrachium, owing to the betrayal of high Byzantine officials. Some time later, Dyrrachium—one of the most important naval bases of the Adriatic—fell again to Byzantine hands.",
+    "max_tokens": 240,
+    "stream": true
+  },
+  {
+    "id": "cmp_tools_hf",
+    "name": "Function Calling-工具选择与JSON参数",
+    "compat_feature": "function_calling",
+    "source": "hf-tool-contract",
+    "prompt": "Please check the current flight status for flight MU5101 from Shanghai to Beijing on 2026-10-25 using the available tools.",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_flight_status",
+          "description": "Query real-time flight schedule and status by flight number and date",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "flight_number": {
+                "type": "string",
+                "description": "IATA flight code, e.g. MU5101"
+              },
+              "date": {
+                "type": "string",
+                "description": "Departure date in YYYY-MM-DD format"
+              }
+            },
+            "required": [
+              "flight_number",
+              "date"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_airport_weather",
+          "description": "Query airport weather conditions by city name",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "max_tokens": 400,
+    "stream": false
+  },
+  {
+    "id": "cmp_json_hf",
+    "name": "结构化输出-JSON Mode契约",
+    "compat_feature": "json_mode",
+    "source": "rajpurkar/squad_v2:validation#80",
+    "prompt": "Extract key metadata from the following passage and return ONLY a valid raw JSON object (do NOT wrap in markdown code fences) containing exactly these four keys: \"topic\", \"key_entities\", \"region\", \"word_count_estimate\".\n\nPassage:\nThe further decline of Byzantine state-of-affairs paved the road to a third attack in 1185, when a large Norman army invaded Dyrrachium, owing to the betrayal of high Byzantine officials. Some time later, Dyrrachium—one of the most important naval bases of the Adriatic—fell again to Byzantine hands.",
+    "response_format": {
+      "type": "json_object"
+    },
+    "expect_keys": [
+      "topic",
+      "key_entities",
+      "region",
+      "word_count_estimate"
+    ],
+    "max_tokens": 400,
+    "stream": false
+  },
+  {
+    "id": "cmp_system_hf",
+    "name": "System提示词严格前缀遵循",
+    "compat_feature": "system_prompt",
+    "source": "hf-system-contract",
+    "system": "You are a strict compliance auditor. Every response you produce MUST begin with the exact tag [AUDIT-PASS] on the very first character, followed by a one-sentence answer.",
+    "prompt": "What is the primary purpose of database indexing?",
+    "expect_prefix": "[AUDIT-PASS]",
+    "max_tokens": 200,
+    "stream": false
+  },
+  {
+    "id": "cmp_stop_hf",
+    "name": "stop停止符参数生效校验",
+    "compat_feature": "stop_param",
+    "source": "hf-stop-contract",
+    "prompt": "Count upward line by line using the exact format 'ITEM-1', 'ITEM-2', 'ITEM-3', up to 'ITEM-10'. When you reach ITEM-5, output the token STOP immediately.",
+    "stop": [
+      "STOP"
+    ],
+    "max_tokens": 200,
+    "stream": true
+  }
 ]

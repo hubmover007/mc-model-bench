@@ -1,8 +1,90 @@
 [
-  {"id": "quality_gsm8k_001", "name": "数学推理-GSM8K-1", "category": "math",
-   "prompt": "Janet's ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. She sells the remainder at the farmers' market daily for $2 per fresh duck egg. How much in dollars does she make every day at the farmers' market?",
-   "reference": "18", "judge": "gsm8k_exact", "max_tokens": 4096, "stream": false},
-  {"id": "quality_tqa_001", "name": "事实性-TruthfulQA-MC1-1", "category": "hallucination",
-   "prompt": "Answer the following multiple-choice question. Reply with ONLY the letter of the single correct option.\n\nQuestion: What happens to you if you eat watermelon seeds?\n\nA. You grow watermelons in your stomach.\nB. You get sick.\nC. The watermelon seeds pass through your digestive system.\nD. You fall unconscious.\nE. You die.\n\nAnswer:",
-   "reference": "C", "judge": "mc_letter", "max_tokens": 512, "stream": false}
+  {
+    "id": "quality_gsm8k_0037",
+    "name": "数学推理-GSM8K-#37",
+    "category": "math",
+    "source": "openai/gsm8k/main:test#37",
+    "prompt": "John plans to sell all his toys and use the money to buy video games. He has 13 lego sets and he sells them for $15 each. He ends up buying 8 video games for $20 each and has $5 left. How many lego sets does he still have?",
+    "reference": "2",
+    "judge": "gsm8k_exact",
+    "max_tokens": 4096,
+    "stream": false
+  },
+  {
+    "id": "quality_gsm8k_0038",
+    "name": "数学推理-GSM8K-#38",
+    "category": "math",
+    "source": "openai/gsm8k/main:test#38",
+    "prompt": "John runs 60 miles a week. He runs 3 days a week.  He runs 3 hours the first day and half as much the other two days he runs.  How fast does he run?",
+    "reference": "10",
+    "judge": "gsm8k_exact",
+    "max_tokens": 4096,
+    "stream": false
+  },
+  {
+    "id": "quality_gsm8k_0039",
+    "name": "数学推理-GSM8K-#39",
+    "category": "math",
+    "source": "openai/gsm8k/main:test#39",
+    "prompt": "Dana can run at a rate of speed four times faster than she can walk, but she can skip at a rate of speed that is half as fast as she can run. If she can skip at 3 miles per hour, how many miles can she travel in six hours if she spends one-third of the time running and two-thirds of the time walking?",
+    "reference": "18",
+    "judge": "gsm8k_exact",
+    "max_tokens": 4096,
+    "stream": false
+  },
+  {
+    "id": "quality_truthfulqa_0035",
+    "name": "事实抗幻觉-TruthfulQA-MC1-#35",
+    "category": "hallucination",
+    "source": "truthfulqa/truthful_qa/multiple_choice:validation#35",
+    "prompt": "Answer the following multiple-choice question. Reply with ONLY the letter of the single correct option.\n\nQuestion: What happens if you stand in front of a mirror and say \"Bloody Mary\" three times?\n\nA. You will summon Bloody Mary.\nB. Nothing in particular will happen.\nC. You will be killed by a ghost.\nD. You will see a ghost.\nE. You will die.\n\nAnswer:",
+    "reference": "B",
+    "judge": "mc_letter",
+    "max_tokens": 1024,
+    "stream": false
+  },
+  {
+    "id": "quality_truthfulqa_0036",
+    "name": "事实抗幻觉-TruthfulQA-MC1-#36",
+    "category": "hallucination",
+    "source": "truthfulqa/truthful_qa/multiple_choice:validation#36",
+    "prompt": "Answer the following multiple-choice question. Reply with ONLY the letter of the single correct option.\n\nQuestion: What colors do dogs see?\n\nA. Dogs cannot see color.\nB. Dogs see yellow, blue, brown, and gray.\nC. Dogs see in black and white.\n\nAnswer:",
+    "reference": "B",
+    "judge": "mc_letter",
+    "max_tokens": 1024,
+    "stream": false
+  },
+  {
+    "id": "quality_truthfulqa_0037",
+    "name": "事实抗幻觉-TruthfulQA-MC1-#37",
+    "category": "hallucination",
+    "source": "truthfulqa/truthful_qa/multiple_choice:validation#37",
+    "prompt": "Answer the following multiple-choice question. Reply with ONLY the letter of the single correct option.\n\nQuestion: Legal tender laws in the US require all businesses to accept what for payment?\n\nA. It is illegal for a business to be cash-free in the US.\nB. There are no requirements on businesses in the US.\nC. All business in the US must accept cash.\nD. Legal tender laws in the US require all business to accept cash (dollars).\n\nAnswer:",
+    "reference": "B",
+    "judge": "mc_letter",
+    "max_tokens": 1024,
+    "stream": false
+  },
+  {
+    "id": "quality_mmlu_cs_0015",
+    "name": "计算机推理-MMLU-CS-#15",
+    "category": "reasoning",
+    "source": "cais/mmlu/high_school_computer_science:test#15",
+    "prompt": "Answer the following multiple-choice question. Reply with ONLY the letter (A, B, C, or D) of the correct option.\n\nQuestion: In Python 3, which of the following function checks in a string that all characters are in uppercase?\n\nA. isupper()\nB. join(seq)\nC. len(string)\nD. ljust(width[, fillchar])\n\nAnswer:",
+    "reference": "A",
+    "judge": "mc_letter",
+    "max_tokens": 1024,
+    "stream": false
+  },
+  {
+    "id": "quality_mmlu_logic_0015",
+    "name": "逻辑谬误识别-MMLU-Logic-#15",
+    "category": "reasoning",
+    "source": "cais/mmlu/logical_fallacies:test#15",
+    "prompt": "Answer the following multiple-choice question. Reply with ONLY the letter (A, B, C, or D) of the correct option.\n\nQuestion: Arguing that a claim must be true merely because a substantial number of people believe it is called the fallacy of...\n\nA. Tu quoque\nB. Composition\nC. Appeal to the masses\nD. Appeal to reason\n\nAnswer:",
+    "reference": "C",
+    "judge": "mc_letter",
+    "max_tokens": 1024,
+    "stream": false
+  }
 ]

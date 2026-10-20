@@ -109,6 +109,53 @@ class AggregateTest(unittest.TestCase):
         self.assertEqual(agg["misplaced_answers"], 1)
         self.assertEqual((agg["quality"]["passed"], agg["quality"]["total"]), (2, 2))
 
+    def test_retry_tracking_counted(self):
+        prov = [{"id": "p1", "name": "P1"}]
+        rows = [
+            {
+                "meta": {"provider_id": "p1", "layer": "performance", "case_id": "perf_1"},
+                "attempt": 2,
+                "retry_count": 1,
+                "retry_history": [{"attempt": 1, "kind": "rate_limit", "http_status": 429, "elapsed_ms": 120.0}],
+                "metrics": {"ttft_ms": 300.0, "content_ttft_ms": 500.0, "e2e_ms": 900.0, "total_wall_ms": 6020.0, "tokens_per_sec": 45.0},
+                "validation": {"passed": True},
+            },
+            {
+                "meta": {"provider_id": "p1", "layer": "compatibility", "case_id": "cmp_1", "compat_feature": "json_mode"},
+                "attempt": 3,
+                "retry_count": 2,
+                "error": {"type": "http_error", "http_status": 502, "message": "Bad Gateway",
+                          "attempts": [{"attempt": 1, "kind": "http_error", "http_status": 502},
+                                       {"attempt": 2, "kind": "http_error", "http_status": 502}]},
+                "validation": {"passed": False},
+            },
+        ]
+        agg = runner.aggregate(rows, prov)["p1"]
+        self.assertEqual(agg["retried_cases"], 1)
+        self.assertEqual(agg["retry_count"], 3)
+        self.assertEqual(agg["performance"]["retried_cases"], 1)
+        self.assertEqual(agg["performance"]["retry_count"], 1)
+        self.assertEqual(agg["performance"]["content_ttft_ms"], [500.0])
+
+    def test_dynamic_layer_description(self):
+        cases = [
+            {"layer": "performance", "id": "p1", "category": "短输入短输出"},
+            {"layer": "compatibility", "id": "c1", "compat_feature": "json_mode"},
+            {"layer": "quality", "id": "q1", "category": "math", "judge": "gsm8k_exact"},
+            {"layer": "long_context", "id": "lc1", "target_tokens": 64000, "needle": {"depth": 0.75}},
+        ]
+        tc = runner.build_test_config({"score_weights": {"performance": 0.3, "compatibility": 0.2, "quality": 0.3, "long_context": 0.2}}, cases)
+        self.assertIn("64K@depth=0.75", tc["layers"]["long_context"]["desc"])
+        self.assertIn("json_mode", tc["layers"]["compatibility"]["desc"])
+
+
+class MmluExtractTest(unittest.TestCase):
+    def test_extract_mmlu(self):
+        row = {"question": "What is 2+2?", "choices": ["3", "4", "5", "6"], "answer": 1}
+        prompt, ref = dd._extract_mmlu(row)
+        self.assertEqual(ref, "B")
+        self.assertIn("B. 4", prompt)
+
 
 class TruthfulQaMcTest(unittest.TestCase):
     row = {"question": "What happens if you eat watermelon seeds?",

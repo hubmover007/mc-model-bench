@@ -45,12 +45,12 @@ except ImportError:
 
 LAYERS = ("performance", "compatibility", "quality", "long_context")
 
-# 各测试层的用途说明（写入报告，便于理解实验设计）
+# 各测试层的用途说明（作为默认说明，build_test_config 会根据当次实际用例动态生成精确说明）
 LAYER_DESC = {
-    "performance": "性能基准层：短/长输入 × 短/长输出 四象限，测 TTFT、生成速度、端到端延迟、chunk 分布",
-    "compatibility": "功能兼容层：SSE 格式 / stop / max_tokens / temperature / Function Calling / JSON mode / 多轮 / system 提示词",
-    "quality": "质量层：数学推理(GSM8K 数值精确匹配) + 事实性选择题(TruthfulQA MC1 选项字母匹配)，程序化判分；content 为空时回退读 reasoning",
-    "long_context": "长上下文专项：大海捞针 10K/32K/64K/128K，输入按 target_tokens 生成，输出 max_tokens=4096",
+    "performance": "性能基准层：短/长输入 × 短/长输出 四象限（HF Alpaca/CNN 真实语料），测 TTFT、内容TTFT、生成速度、端到端延迟、chunk 分布",
+    "compatibility": "功能兼容层：SSE 格式 / Function Calling / JSON mode / System 提示词 / stop 停止符 5 项协议契约",
+    "quality": "质量层：数学推理(GSM8K 多步数值精确匹配) + 事实抗幻觉(TruthfulQA MC1) + 专业推理(MMLU CS/Logic)，程序化判分；content 为空时回退读 reasoning",
+    "long_context": "长上下文专项：大海捞针 10K(depth=0.25) / 64K(depth=0.75) / 128K(depth=0.50)，输出 max_tokens=4096",
 }
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -251,11 +251,12 @@ def resolve_api_key(provider, environ=os.environ):
 # ---------------------------------------------------------------------------
 
 class ApiError(Exception):
-    def __init__(self, message, kind="api_error", http_status=None, retryable=False):
+    def __init__(self, message, kind="api_error", http_status=None, retryable=False, retry_after=None):
         super().__init__(message)
         self.kind = kind
         self.http_status = http_status
         self.retryable = retryable
+        self.retry_after = retry_after
 
 
 def extract_usage_fields(usage):
@@ -330,7 +331,13 @@ def run_stream(url, headers, body, timeout):
         status_code = resp.status_code
         if status_code != 200:
             detail = (resp.text or "")[:500]
-            raise ApiError("HTTP %d: %s" % (status_code, detail), http_status=status_code, retryable=status_code >= 500)
+            ra = resp.headers.get("Retry-After")
+            retry_after = float(ra) if (ra and ra.replace(".", "", 1).isdigit()) else None
+            raise ApiError("HTTP %d: %s" % (status_code, detail),
+                           kind="rate_limit" if status_code == 429 else "http_error",
+                           http_status=status_code,
+                           retryable=(status_code >= 500 or status_code in (408, 429)),
+                           retry_after=retry_after)
         ctype = resp.headers.get("Content-Type", "")
         if "charset" not in ctype.lower():
             resp.encoding = "utf-8"  # 部分渠道 SSE 不带 charset，回退 UTF-8 避免中文损坏
@@ -398,7 +405,13 @@ def run_nonstream(url, headers, body, timeout):
         status_code = resp.status_code
         if status_code != 200:
             detail = (resp.text or "")[:500]
-            raise ApiError("HTTP %d: %s" % (status_code, detail), http_status=status_code, retryable=status_code >= 500)
+            ra = resp.headers.get("Retry-After")
+            retry_after = float(ra) if (ra and ra.replace(".", "", 1).isdigit()) else None
+            raise ApiError("HTTP %d: %s" % (status_code, detail),
+                           kind="rate_limit" if status_code == 429 else "http_error",
+                           http_status=status_code,
+                           retryable=(status_code >= 500 or status_code in (408, 429)),
+                           retry_after=retry_after)
         try:
             data = resp.json()
         except Exception as e:
@@ -668,7 +681,9 @@ def run_case(provider, case, cfg, order_index, once=False):
     # 单次模式：每条用例只跑 1 次（跳过 temperature=0 一致性双跑）
     n_runs = 1 if once else int(case.get("runs", 1))
     result, attempts, retries = None, [], int(cfg.get("retries", 0))
+    wall_started = time.monotonic()
     for attempt in range(1 + retries):
+        attempt_started = time.monotonic()
         try:
             runs = [run_stream(url, headers, body, timeout) if case.get("stream") else run_nonstream(url, headers, body, timeout)
                     for _ in range(n_runs)]
@@ -676,13 +691,24 @@ def run_case(provider, case, cfg, order_index, once=False):
             if n_runs > 1:
                 result["run_details"] = [{"metrics": r["metrics"], "output": r["output"]} for r in runs]
             result["attempt"] = attempt + 1
+            result["retry_count"] = attempt
+            if attempts:
+                result["retry_history"] = attempts
+            if result.get("metrics") is not None:
+                result["metrics"]["total_wall_ms"] = round((time.monotonic() - wall_started) * 1000.0, 1)
+                result["metrics"]["retry_count"] = attempt
             break
         except ApiError as e:
-            attempts.append({"attempt": attempt + 1, "kind": e.kind, "http_status": e.http_status, "message": str(e)[:300]})
+            failed_ms = round((time.monotonic() - attempt_started) * 1000.0, 1)
+            attempts.append({"attempt": attempt + 1, "kind": e.kind, "http_status": e.http_status,
+                             "elapsed_ms": failed_ms, "message": str(e)[:300]})
             if e.retryable and attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
+                wait_s = e.retry_after if e.retry_after is not None else (5.0 if e.http_status == 429 else 1.5 * (attempt + 1))
+                time.sleep(min(wait_s, 30.0))
                 continue
-            result = {"error": {"type": e.kind, "http_status": e.http_status, "message": str(e)[:500], "attempts": attempts}}
+            result = {"error": {"type": e.kind, "http_status": e.http_status, "message": str(e)[:500],
+                                "attempts": attempts, "total_wall_ms": round((time.monotonic() - wall_started) * 1000.0, 1)},
+                      "attempt": attempt + 1, "retry_count": attempt, "retry_history": attempts}
             break
 
     result["validation"] = validate_case(case, result)
@@ -703,13 +729,17 @@ def aggregate(rows, providers):
     for p in providers:
         out[p["id"]] = {
             "provider": p,
-            "performance": {"cases": 0, "ok": 0, "errors": {}, "ttft_ms": [], "e2e_ms": [], "speed": [],
-                            "completion_tokens": 0, "reasoning_tokens": 0, "cached_tokens_sum": 0},
+            "performance": {"cases": 0, "ok": 0, "errors": {}, "ttft_ms": [], "content_ttft_ms": [], "e2e_ms": [],
+                            "total_wall_ms": [], "speed": [], "completion_tokens": 0, "reasoning_tokens": 0,
+                            "cached_tokens_sum": 0, "retried_cases": 0, "retry_count": 0},
             "compatibility": {"total": 0, "passed": 0, "features": {}},
             "quality": {"total": 0, "passed": 0, "by_category": {}},
             "long_context": {"total": 0, "run": 0, "passed": 0, "skipped": 0, "by_case": {}},
             "errors": [],
             "misplaced_answers": 0,
+            "retried_cases": 0,
+            "retry_count": 0,
+            "retry_events": [],
         }
     for r in rows:
         pid = r["meta"]["provider_id"]
@@ -722,11 +752,22 @@ def aggregate(rows, providers):
                 agg["long_context"]["skipped"] += 1
                 agg["long_context"]["by_case"][cid] = "跳过"
             continue
+        rc = int(r.get("retry_count") or (max(0, int(r.get("attempt", 1)) - 1)))
+        if rc > 0:
+            agg["retry_count"] += rc
+            for h in (r.get("retry_history") or (r.get("error") or {}).get("attempts") or []):
+                agg["retry_events"].append({
+                    "case_id": cid, "layer": layer, "attempt": h.get("attempt"),
+                    "kind": h.get("kind"), "http_status": h.get("http_status"),
+                    "elapsed_ms": h.get("elapsed_ms"), "final_ok": not bool(r.get("error")),
+                })
         if r.get("error"):
-            agg["errors"].append({"case_id": cid, "type": r["error"]["type"], "message": r["error"]["message"]})
+            agg["errors"].append({"case_id": cid, "type": r["error"]["type"], "message": r["error"]["message"],
+                                  "attempts": len(r["error"].get("attempts") or [])})
             if layer == "performance":
                 agg["performance"]["cases"] += 1
                 agg["performance"]["errors"][r["error"]["type"]] = agg["performance"]["errors"].get(r["error"]["type"], 0) + 1
+                agg["performance"]["retry_count"] += rc
             elif layer == "compatibility":
                 agg["compatibility"]["total"] += 1
                 f = agg["compatibility"]["features"].setdefault(r["meta"].get("compat_feature") or "other", {"total": 0, "passed": 0})
@@ -738,16 +779,25 @@ def aggregate(rows, providers):
                 agg["long_context"]["run"] += 1
                 agg["long_context"]["by_case"][cid] = "错误"
             continue
+        if rc > 0:
+            agg["retried_cases"] += 1
         m = r.get("metrics") or {}
         if (r.get("validation") or {}).get("misplaced_answer"):
             agg["misplaced_answers"] += 1
         if layer == "performance":
             agg["performance"]["cases"] += 1
             agg["performance"]["ok"] += 1
+            if rc > 0:
+                agg["performance"]["retried_cases"] += 1
+                agg["performance"]["retry_count"] += rc
             if m.get("ttft_ms") is not None:
                 agg["performance"]["ttft_ms"].append(m["ttft_ms"])
+            if m.get("content_ttft_ms") is not None:
+                agg["performance"]["content_ttft_ms"].append(m["content_ttft_ms"])
             if m.get("e2e_ms") is not None:
                 agg["performance"]["e2e_ms"].append(m["e2e_ms"])
+            if m.get("total_wall_ms") is not None:
+                agg["performance"]["total_wall_ms"].append(m["total_wall_ms"])
             if m.get("tokens_per_sec") is not None:
                 agg["performance"]["speed"].append(m["tokens_per_sec"])
             agg["performance"]["completion_tokens"] += m.get("completion_tokens") or 0
@@ -780,7 +830,7 @@ def aggregate(rows, providers):
 
 
 def compute_scores(agg_by_provider, weights):
-    w = {"performance": 0.3, "compatibility": 0.3, "quality": 0.2, "long_context": 0.2}
+    w = {"performance": 0.3, "compatibility": 0.2, "quality": 0.3, "long_context": 0.2}
     w.update(weights or {})
     pids = list(agg_by_provider.keys())
     ttft_avg = {pid: agg_mean(agg_by_provider[pid]["performance"]["ttft_ms"]) for pid in pids}
@@ -819,11 +869,46 @@ def compute_scores(agg_by_provider, weights):
 # Markdown 汇总表
 # ---------------------------------------------------------------------------
 
+def _describe_layer_cases(layer, layer_cases):
+    if not layer_cases:
+        return LAYER_DESC.get(layer, "")
+    if layer == "performance":
+        cats = {}
+        for c in layer_cases:
+            k = c.get("category") or "未分类"
+            cats[k] = cats.get(k, 0) + 1
+        summary = " / ".join("%s(%d)" % (k, v) for k, v in cats.items())
+        return "性能基准层：实际覆盖 [%s]，采集 TTFT、内容TTFT、生成速度(tok/s)、E2E 与含重试总耗时" % summary
+    if layer == "compatibility":
+        feats = []
+        for c in layer_cases:
+            f = c.get("compat_feature") or c.get("id")
+            if f not in feats:
+                feats.append(f)
+        return "功能兼容层：实际执行 [%s] 共 %d 项协议契约校验" % (" / ".join(feats), len(layer_cases))
+    if layer == "quality":
+        cats = {}
+        judges = []
+        for c in layer_cases:
+            k = c.get("category") or "other"
+            cats[k] = cats.get(k, 0) + 1
+            j = c.get("judge")
+            if j and j not in judges:
+                judges.append(j)
+        cat_str = " + ".join("%s(%d题)" % (k, v) for k, v in cats.items())
+        return "质量评测层：HF 抽样 [%s]，判分器 [%s]；content 为空时自动回退 reasoning 并单独记录通道偏移" % (cat_str, ", ".join(judges))
+    if layer == "long_context":
+        tiers = ["%sK@depth=%s" % (int(c.get("target_tokens", 0)) // 1000, (c.get("needle") or {}).get("depth", "-"))
+                 for c in layer_cases]
+        return "长上下文专项：大海捞针梯度 [%s]，考察不同深度长文本检索与截断" % " / ".join(tiers)
+    return LAYER_DESC.get(layer, "")
+
+
 def build_test_config(cfg, cases):
-    """汇总本次实验的参数配置（共享参数/推理/超时/重试/权重/渠道/模型/用例设计），写入报告。"""
-    layers = {}
+    """汇总本次实验的参数配置（共享参数/推理/超时/重试/权重/渠道/模型/用例设计），根据实际加载用例动态生成说明写入报告。"""
+    by_layer = {}
     for c in cases:
-        layers[c["layer"]] = layers.get(c["layer"], 0) + 1
+        by_layer.setdefault(c["layer"], []).append(c)
     return {
         "shared_request_params": cfg.get("shared_request_params", {}),
         "top_p_note": "默认不传（仅用例或模型显式配置时才传）",
@@ -836,7 +921,7 @@ def build_test_config(cfg, cases):
         "models": [{"id": m["id"], "aliases": m.get("aliases", {}), "reasoning": bool(m.get("reasoning")),
                     "context": m.get("context"), "supports": m.get("supports", {})}
                    for m in cfg.get("models", [])],
-        "layers": {k: {"count": v, "desc": LAYER_DESC.get(k, "")} for k, v in layers.items()},
+        "layers": {k: {"count": len(v), "desc": _describe_layer_cases(k, v)} for k, v in by_layer.items()},
     }
 
 
@@ -903,15 +988,16 @@ def render_markdown(agg_by_provider, scores, providers, env=None, test_config=No
         lines.append("")
 
     lines.append("\n## 3. 性能基准层\n")
-    lines.append("| 模型@渠道 | 用例 | 成功 | 错误 | TTFT均值(ms) | TTFT P50 | TTFT P95 | 速度(tok/s) | E2E均值(ms) | 推理tokens | 推理占比 | 缓存tokens |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("| 模型@渠道 | 用例 | 成功 | 错误 | 重试次数 | TTFT均值(ms) | 内容TTFT均值(ms) | TTFT P50 | TTFT P95 | 速度(tok/s) | E2E均值(ms) | 推理tokens | 推理占比 | 缓存tokens |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for p in providers:
         a = agg_by_provider[p["id"]]["performance"]
         ratio = (a["reasoning_tokens"] / a["completion_tokens"] * 100) if a["completion_tokens"] else None
         ratio_str = ("%.0f%%" % ratio) if ratio is not None else "-"
-        lines.append("| %s | %d | %d | %d | %s | %s | %s | %s | %s | %s | %s | %s |" % (
-            p["name"], a["cases"], a["ok"], sum(a["errors"].values()),
-            agg_mean(a["ttft_ms"]), percentile(a["ttft_ms"], 0.5), percentile(a["ttft_ms"], 0.95),
+        lines.append("| %s | %d | %d | %d | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+            p["name"], a["cases"], a["ok"], sum(a["errors"].values()), a.get("retry_count", 0),
+            agg_mean(a["ttft_ms"]), agg_mean(a.get("content_ttft_ms", [])),
+            percentile(a["ttft_ms"], 0.5), percentile(a["ttft_ms"], 0.95),
             agg_mean(a["speed"]), agg_mean(a["e2e_ms"]), a["reasoning_tokens"], ratio_str, a["cached_tokens_sum"]))
 
     lines.append("\n## 4. 功能兼容层（通过/总数）\n")
@@ -962,12 +1048,16 @@ def render_markdown(agg_by_provider, scores, providers, env=None, test_config=No
         cells = [l["by_case"].get(cid, "-") for cid in lc_cases]
         lines.append("| %s | %s | %s |" % (p["name"], rate, " | ".join(cells)))
 
-    lines.append("\n### 答案落错通道（content 为空、答案在 reasoning 字段）\n")
-    lines.append("判分已对这类情况回退取 reasoning（不再误判答错），但对只读 content 的下游仍是缺陷，单独计数：\n")
-    lines.append("| 模型@渠道 | 次数 |")
-    lines.append("|---|---|")
+    lines.append("\n### 异常与通道审计（答案落错通道 / 错误重试统计）\n")
+    lines.append("- **答案落错通道**：`content` 为空、答案落在 `reasoning` 字段（判分已回退不误判，但对只读 `content` 的下游仍是协议缺陷）。\n")
+    lines.append("- **重试统计**：记录触发重试的用例数与总重试次数，防止 `retries` 机制掩盖偶发 5xx / 429 / 超时尾延迟。\n")
+    lines.append("| 模型@渠道 | 答案落错通道(次) | 靠重试成功用例(个) | 总重试发生(次) | 最终失败用例(个) |")
+    lines.append("|---|---|---|---|---|")
     for p in providers:
-        lines.append("| %s | %d |" % (p["name"], agg_by_provider[p["id"]].get("misplaced_answers", 0)))
+        pa = agg_by_provider[p["id"]]
+        lines.append("| %s | %d | %d | %d | %d |" % (
+            p["name"], pa.get("misplaced_answers", 0), pa.get("retried_cases", 0),
+            pa.get("retry_count", 0), len(pa.get("errors", []))))
 
     lines.append("\n## 7. 综合评分（满分 100）\n")
     lines.append("| 模型@渠道 | 性能 | 兼容 | 质量 | 长上下文 | 总评分 |")
@@ -1434,11 +1524,15 @@ def main():
         if result.get("skipped"):
             log("  -> 跳过：%s" % result.get("skip_reason"))
         elif result.get("error"):
-            log("  -> 错误：%s | %s" % (result["error"]["type"], result["error"]["message"][:120]))
+            rc = int(result.get("retry_count", 0))
+            retry_tag = (" (重试%d次后仍失败)" % rc) if rc else ""
+            log("  -> 错误%s：%s | %s" % (retry_tag, result["error"]["type"], result["error"]["message"][:120]))
         else:
-            log("  -> ok | ttft=%s ms | e2e=%s ms | %s tok/s | 内容 %d 字 | 推理 %d 字 | chunk=%s" % (
-                m.get("ttft_ms"), m.get("e2e_ms"), m.get("tokens_per_sec"),
-                m.get("content_chars"), m.get("reasoning_chars"), m.get("chunk_count")))
+            rc = int(result.get("retry_count", 0))
+            retry_tag = (" | retry=%d(wall=%sms)" % (rc, m.get("total_wall_ms"))) if rc else ""
+            log("  -> ok | ttft=%s ms | content_ttft=%s ms | e2e=%s ms | %s tok/s | 内容 %d 字 | 推理 %d 字 | chunk=%s%s" % (
+                m.get("ttft_ms"), m.get("content_ttft_ms"), m.get("e2e_ms"), m.get("tokens_per_sec"),
+                m.get("content_chars"), m.get("reasoning_chars"), m.get("chunk_count"), retry_tag))
 
     try:
         if args.dry_run:

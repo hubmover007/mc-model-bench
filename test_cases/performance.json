@@ -1,6 +1,40 @@
 [
-  {"id": "perf_sis_01", "name": "短输入短输出-1", "category": "短输入短输出",
-   "prompt": "用一句话介绍量子计算（不超过 50 字）。", "max_tokens": 200, "stream": true},
-  {"id": "perf_lil_01", "name": "长输入长输出-1", "category": "长输入长输出",
-   "prompt": "{filler}\n\n请基于以上资料撰写一篇约 800 字的详细摘要，要求覆盖资料中的主要观点和论据。", "filler_tokens": 2500, "max_tokens": 2200, "stream": true}
+  {
+    "id": "perf_sis_hf_0124",
+    "name": "短输入短输出-Alpaca#124",
+    "category": "短输入短输出",
+    "source": "tatsu-lab/alpaca:train#124",
+    "prompt": "Find the synonyms of the following word: 'Tenacious'.\n\n(Reply concisely in 1-2 sentences, no more than 50 words.)",
+    "max_tokens": 200,
+    "stream": true
+  },
+  {
+    "id": "perf_sil_hf_0159",
+    "name": "短输入长输出-Alpaca#159",
+    "category": "短输入长输出",
+    "source": "tatsu-lab/alpaca:train#159",
+    "prompt": "Give me a detailed overview of the framework of a web service.\n\nPlease write a comprehensive, structured explanation of at least 600 words covering key principles, concrete examples, and practical trade-offs.",
+    "max_tokens": 1800,
+    "stream": true
+  },
+  {
+    "id": "perf_lis_hf_0050",
+    "name": "长输入短输出-CNN#50",
+    "category": "长输入短输出",
+    "source": "abisee/cnn_dailymail:test#50",
+    "prompt": "Reference material:\n\n{filler}\n\nAdditional news report:\n(CNN)According to an outside review by Columbia Journalism School professors, \"(a)n institutional failure at Rolling Stone resulted in a deeply flawed article about a purported gang rape at the University of Virginia.\" The Columbia team concluded that \"The failure encompassed reporting, editing, editorial supervision and fact-checking.\" Hardly a ringing endorsement of the editorial process at the publication. The magazine's managing editor, Will Dana, wrote, \"We would like to apologize to our readers and to all of those who were damaged by our story and the ensuing fallout, including members of the Phi Kappa Psi fraternity and UVA administrators and students.\" Brian Stelter: Fraternity to 'pursue all available legal action' The next question is: . Can UVA, Phi Kappa Psi or any of the other fraternities on campus sue for defamation? The Virginia Supreme Court said in Jordan v. Kollman that \"the elements of libel are (1) publication of (2) an actionable statement with (3) the requisite intent.\" \"Actionable\" means the statement must be both false and defamatory. Of course, the law of defamation must be balanced against the freedom of speech protected under not only the First Amendment to the United States Constitution, but also the Virginia Constitution. True statements cannot be defamatory. Neither can pure statements of opinion, because they theoretically cannot be either true or false. But the Rolling Stone article certainly purported to be fact, and it apparently is not exactly what the law considers \"true.\" The individual members of the fraternity will likely be considered private individuals, and not public figures; the latter have a harder time proving defamation. A private person suing for defamation must establish that the defendant has published a false factual statement that is about the person and that it also harms the person's reputation. The private plaintiff also must show that the defendant knew that the statement was false, or believed it was true but lacked a reasonable basis, or acted negligently in checking the facts. At first blush, that sounds like it fits perfectly, right? The Columbia report may go a long way toward establishing at least a modicum of the required intent. But that's only half the battle. There are strict rules about who can be a plaintiff in a defamation action like this. The identity of the aspiring plaintiff matters. First, let's eliminate UVA. The university is a public university, and therefore it is a governmental\n\nTask: Summarize the core facts of the material above in no more than 3 bullet points (under 60 words total).",
+    "filler_tokens": 2200,
+    "max_tokens": 200,
+    "stream": true
+  },
+  {
+    "id": "perf_lil_hf_0051",
+    "name": "长输入长输出-CNN#51",
+    "category": "长输入长输出",
+    "source": "abisee/cnn_dailymail:test#51",
+    "prompt": "Reference material:\n\n{filler}\n\nPrimary case report:\n(CNN)One of Tokyo's most prominent districts has taken a small, but potentially significant step to recognizing same-sex unions in Japan. The government of Shibuya ward, one of the capital's most famous shopping and trendy entertainment districts, passed ordinance on Wednesday paving the way for \"partnership certificates\" for same-sex couples, allowing them some of the rights of married heterosexual couples. Same-sex partners who are registered with the district's ward office will be able to hold visitation rights in hospitals and co-sign tenancy agreements. Other advantages that heterosexual married couples enjoy, such as joint filing of taxes, are controlled by the federal government and are outside the remit of individual municipalities. The measure was proposed in February by Shibuya's mayor, Toshitake Kuwahara. While the certificates will not be issued until later in the summer and are not legally binding, proponents of marriage equality in socially conservative Japan say that the ward's decision is a step in the right direction. \"It is not a marriage license and advantages will be limited but still better than nothing,\" Gon Matsunaka, a gay rights activist, told CNN. While Shibuya's decision does not yet equate to heterosexual marriage, the hope is that the move will be the beginnings of promoting marriage equality for gay communities. \"What is important for the LGBT (lesbian, gay, bisexual and transgender) community in Shibuya is the ruling will make us visible in society,\"  Matsunaka said . \"It could be a strong driver for Shibuya citizens to learn and know what kind of problems LGBT people are facing.\" Taiga Ishikawa, Tokyo councillor and the first male gay local assembly member in Japan, told CNN the ordinance was a \"big first step for the protection of human rights.\" He called the decision \"happy\" but said that it must go alongside education about alternative lifestyles. He said that the most important part of today's announcement is that it \"should be actually put into practice, as should education for understanding (LGBT individuals) especially they suffer as they find out their sexuality when they are young.\" Neighboring Setagaya ward has indicated that it would look into following Shibuya's lead. However, former councilor Ishikawa cautioned against taking the movement's momentum for granted. \"To realize equal rights for gay couples, a national law has to be made,\" he said. While outright discrimination against the LGBT community is rare in J\n\nTask: Write a detailed analytical briefing (around 700-900 words) synthesizing the background, key arguments, and implications from the documents above.",
+    "filler_tokens": 2500,
+    "max_tokens": 2000,
+    "stream": true
+  }
 ]

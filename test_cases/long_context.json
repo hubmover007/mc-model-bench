@@ -1,12 +1,44 @@
 [
-  {"id": "lc_needle_10k", "name": "大海捞针-10K", "target_tokens": 10000,
-   "needle": {"text": "【重要通知】抽奖码：7C9F-42KX-8QZ1。中奖人：李华。奖品：iPhone 16 Pro 512GB。", "depth": 0.5},
-   "prompt": "请仔细阅读以下全部文本，然后回答问题。\n\n{needle_text}\n\n问题：{question}",
-   "question": "以上全部文本中提到的抽奖码是什么？请只回答抽奖码本身，不要输出其他内容。",
-   "expect_contains": "7C9F-42KX-8QZ1", "max_tokens": 4096, "stream": true},
-  {"id": "lc_needle_128k", "name": "大海捞针-128K", "target_tokens": 128000,
-   "needle": {"text": "【重要通知】抽奖码：9X2B-64NF-3CQ7。中奖人：刘洋。奖品：大疆 Air 3 无人机。", "depth": 0.5},
-   "prompt": "请仔细阅读以下全部文本，然后回答问题。\n\n{needle_text}\n\n问题：{question}",
-   "question": "以上全部文本中提到的抽奖码是什么？请只回答抽奖码本身，不要输出其他内容。",
-   "expect_contains": "9X2B-64NF-3CQ7", "max_tokens": 4096, "stream": true}
+  {
+    "id": "lc_needle_10k",
+    "name": "大海捞针-10K(前段depth=0.25)",
+    "target_tokens": 10000,
+    "needle": {
+      "text": "【核心审计归档】生产数据库应急回滚凭证：RV94-71KP-3MX8。审批负责人：周明远。生效窗口：72小时。",
+      "depth": 0.25
+    },
+    "prompt": "请仔细阅读以下全部技术归档材料，然后回答问题。\n\n{needle_text}\n\n问题：{question}",
+    "question": "以上全部材料中提到的「生产数据库应急回滚凭证」是什么？请只回答凭证代码本身，不要输出任何其他文字。",
+    "expect_contains": "RV94-71KP-3MX8",
+    "max_tokens": 4096,
+    "stream": true
+  },
+  {
+    "id": "lc_needle_64k",
+    "name": "大海捞针-64K(后段depth=0.75)",
+    "target_tokens": 64000,
+    "needle": {
+      "text": "【核心审计归档】跨区灾备集群切换授权码：GT58-39WN-6LP2。审批负责人：陈静姝。生效窗口：48小时。",
+      "depth": 0.75
+    },
+    "prompt": "请仔细阅读以下全部技术归档材料，然后回答问题。\n\n{needle_text}\n\n问题：{question}",
+    "question": "以上全部材料中提到的「跨区灾备集群切换授权码」是什么？请只回答授权码本身，不要输出任何其他文字。",
+    "expect_contains": "GT58-39WN-6LP2",
+    "max_tokens": 4096,
+    "stream": true
+  },
+  {
+    "id": "lc_needle_128k",
+    "name": "大海捞针-128K(中段depth=0.50)",
+    "target_tokens": 128000,
+    "needle": {
+      "text": "【核心审计归档】零信任网关根密钥冷备提取码：HK27-84QD-9ZN5。审批负责人：林涛然。生效窗口：24小时。",
+      "depth": 0.5
+    },
+    "prompt": "请仔细阅读以下全部技术归档材料，然后回答问题。\n\n{needle_text}\n\n问题：{question}",
+    "question": "以上全部材料中提到的「零信任网关根密钥冷备提取码」是什么？请只回答提取码本身，不要输出任何其他文字。",
+    "expect_contains": "HK27-84QD-9ZN5",
+    "max_tokens": 4096,
+    "stream": true
+  }
 ]
