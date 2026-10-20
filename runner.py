@@ -829,16 +829,8 @@ def aggregate(rows, providers):
     return out
 
 
-FALLBACK_SCORE_WEIGHTS = {
-    "performance": 0.3,
-    "compatibility": 0.2,
-    "quality": 0.3,
-    "long_context": 0.2,
-}
-
-
 def compute_scores(agg_by_provider, weights):
-    w = dict(FALLBACK_SCORE_WEIGHTS)
+    w = {"performance": 0.3, "compatibility": 0.2, "quality": 0.3, "long_context": 0.2}
     w.update(weights or {})
     pids = list(agg_by_provider.keys())
     ttft_avg = {pid: agg_mean(agg_by_provider[pid]["performance"]["ttft_ms"]) for pid in pids}
@@ -1141,34 +1133,6 @@ def load_config(args):
         sys.exit("配置文件不存在：%s\n请先复制 config/providers-template.json 为 config/providers.json，并填写 api key / 模型调用名。" % args.providers_file)
     with open(args.providers_file, encoding="utf-8") as f:
         cfg = json.load(f)
-
-    # 自动升级并写回旧版 providers.json（备份为 providers.json.bak）：
-    #   1) 旧版权重 compatibility=0.3, quality=0.2 -> 升级为 compatibility=0.2, quality=0.3
-    #   2) 旧版过大的 reasoning_max_tokens=131072 -> 收敛为 16384
-    if os.path.basename(args.providers_file) == "providers.json":
-        sw = cfg.get("score_weights") or {}
-        need_migrate = (
-            (sw.get("compatibility") == 0.3 and sw.get("quality") == 0.2)
-            or int(cfg.get("reasoning_max_tokens", 16384) or 16384) > 32768
-        )
-        if need_migrate:
-            bak_path = args.providers_file + ".bak"
-            try:
-                if not os.path.exists(bak_path):
-                    with open(args.providers_file, "rb") as src, open(bak_path, "wb") as dst:
-                        dst.write(src.read())
-                cfg["score_weights"] = dict(FALLBACK_SCORE_WEIGHTS)
-                if int(cfg.get("reasoning_max_tokens", 16384) or 16384) > 32768:
-                    cfg["reasoning_max_tokens"] = 16384
-                with open(args.providers_file, "w", encoding="utf-8") as wf:
-                    json.dump(cfg, wf, ensure_ascii=False, indent=2)
-                print("[配置自动升级] 已将 %s 备份至 %s，并自动更新 score_weights=%s, reasoning_max_tokens=%s"
-                      % (args.providers_file, bak_path, cfg["score_weights"], cfg.get("reasoning_max_tokens")))
-            except Exception as e:
-                cfg["score_weights"] = dict(FALLBACK_SCORE_WEIGHTS)
-                print("[配置自动升级] 内存已应用最新权重 %s（写回文件失败：%s）" % (cfg["score_weights"], e))
-        elif not sw:
-            cfg["score_weights"] = dict(FALLBACK_SCORE_WEIGHTS)
     # 兼容旧格式（providers 直接是组合）与新版（channels + models）
     if "channels" in cfg or "models" in cfg:
         providers = build_combos(cfg)

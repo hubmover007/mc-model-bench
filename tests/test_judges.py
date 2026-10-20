@@ -148,35 +148,6 @@ class AggregateTest(unittest.TestCase):
         self.assertIn("64K@depth=0.75", tc["layers"]["long_context"]["desc"])
         self.assertIn("json_mode", tc["layers"]["compatibility"]["desc"])
 
-    def test_auto_migrate_providers_json(self):
-        import argparse
-        import json
-        import shutil
-        tmp = os.path.join(runner.HERE, "tests", "_tmp_migrate")
-        os.makedirs(tmp, exist_ok=True)
-        try:
-            pfile = os.path.join(tmp, "providers.json")
-            old_cfg = {
-                "reasoning_max_tokens": 131072,
-                "score_weights": {"performance": 0.3, "compatibility": 0.3, "quality": 0.2, "long_context": 0.2},
-                "channels": [{"id": "c1", "base_url": "http://localhost"}],
-                "models": [{"id": "m1", "aliases": {"c1": "m1"}}],
-            }
-            with open(pfile, "w", encoding="utf-8") as f:
-                json.dump(old_cfg, f)
-            args = argparse.Namespace(providers_file=pfile, cases_dir=os.path.join(runner.HERE, "test_cases"), layers="performance")
-            cfg, _, _ = runner.load_config(args)
-            self.assertEqual(cfg["score_weights"], {"performance": 0.3, "compatibility": 0.2, "quality": 0.3, "long_context": 0.2})
-            self.assertEqual(cfg["reasoning_max_tokens"], 16384)
-            self.assertTrue(os.path.exists(pfile + ".bak"))
-            with open(pfile, encoding="utf-8") as f:
-                saved = json.load(f)
-            self.assertEqual(saved["score_weights"]["quality"], 0.3)
-            self.assertEqual(saved["score_weights"]["compatibility"], 0.2)
-            self.assertEqual(saved["reasoning_max_tokens"], 16384)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-
 
 class MmluExtractTest(unittest.TestCase):
     def test_extract_mmlu(self):
