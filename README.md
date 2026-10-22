@@ -20,6 +20,7 @@ mc-model-bench/
 │   ├── compatibility.json       # 功能兼容层（5 条：stream_sse / function_calling / json_mode / system_prompt / stop_param）
 │   ├── quality.json             # 质量评测层（8 条：3 GSM8K 多步数学 + 3 TruthfulQA MC1 + 2 MMLU CS/Logic）
 │   └── long_context.json        # 长上下文专项（3 条：大海捞针 10K@0.25 / 64K@0.75 / 128K@0.50）
+├── probe_ttft.py                # 首包/TTFT 专项探针（单模型分阶段延迟 + 正反建议）
 ├── download_datasets.py         # 从 HuggingFace 下载抽取四层评测用例（支持 --all 全量刷新）
 ├── runner.py                    # 统一测试执行器
 ├── gen_report_template.py       # 生成报告模板 Excel（含公式）
@@ -28,7 +29,8 @@ mc-model-bench/
 ├── mock_server.py               # 本地 OpenAI 兼容 mock（自检，无需真实 key）
 ├── docs/
 │   ├── 差距解读.md              # 现在做法 vs 之前做法
-│   └── 代码解读.md              # 测试内容 / 代码逻辑 / 输出结果
+│   ├── 代码解读.md              # 测试内容 / 代码逻辑 / 输出结果
+│   └── 首包延迟测试说明.md      # TTFT 三口径定义 / 指标字典 / 正反建议 / 常见坑
 └── kimi_k3_easyrouter_vs_mayi.py  # 之前的单文件脚本（保留作参考）
 ```
 
@@ -85,3 +87,29 @@ python runner.py --providers-file config/providers.mock.json --out output_mock
 - **总评分** = `性能×0.3 + 兼容×0.2 + 质量×0.3 + 长上下文×0.2`
 
 详见 `docs/代码解读.md` 与 `docs/差距解读.md`。
+
+## 首包延迟专项（probe_ttft.py）
+
+只测「首包」，把一次流式请求拆成 **DNS / TCP / TLS / 响应头 / 首SSE / 首token / 首content / 结束**
+各阶段，多次采样给 P50/P95，并自动区分推理模型的「思考期」，用于判断慢在网络、网关排队还是模型 prefill。
+纯标准库实现，零依赖。
+
+```bash
+export EASYROUTER_API_KEY=sk-...
+python probe_ttft.py --model gemini-3.1-pro-preview --runs 20 --warmup 2
+python probe_ttft.py --cases short,long --keepalive --runs 20        # 长连接对比
+python probe_ttft.py --models gemini-3.1-pro-preview,gpt-5.2 --runs 20  # 基线对比
+python probe_ttft.py --list-cases                                    # 查看内置用例
+```
+
+三个「首包」口径（**不要混用**）：
+
+| 口径 | 字段 | 用户视角 |
+|---|---|---|
+| 首字节 | `ttfb_headers_ms` | 网关受理快不快 |
+| 首 token（业界 TTFT） | `first_token_ms` | 服务端 prefill/排队快不快 |
+| 首 content | `first_content_ms` | **用户真正看到文字要等多久** |
+
+输出 `output_ttft/ttft_<时间戳>/{report.md, probe.json, report.csv}`，其中 `report.md` 含
+阶段分解表、逐次明细、**自动诊断**与**正反建议**。完整方法论见
+[`docs/首包延迟测试说明.md`](docs/首包延迟测试说明.md)。
