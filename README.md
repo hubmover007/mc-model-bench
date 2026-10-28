@@ -52,6 +52,7 @@ python download_datasets.py --datasets gsm8k,truthfulqa,mmlu_cs,mmlu_logic --off
 # 3. 执行（--env-tag 标注测试环境并写入报告，本地/EC2 各跑一次即可区分）
 python runner.py --sample --env-tag "本地笔记本"     # 示例模式：复用性能层第1条，每个组合只跑1次（6次）
 python runner.py --list-cases                       # 查看用例
+python runner.py --list-models                      # 查看 providers.json 里的「模型@渠道」组合与 id
 python runner.py --dry-run                          # 只看请求计划
 python runner.py --once --env-tag "本地笔记本"       # 单次模式：全量用例每条只跑 1 次、不重试
 python runner.py --env-tag "EC2 g5.xlarge"          # 全量执行（在 EC2 上跑时标注 EC2 环境）

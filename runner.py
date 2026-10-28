@@ -1559,6 +1559,17 @@ def build_cache_report(out_dir):
     return xlsx_path or md_path
 
 
+def print_models(providers):
+    """列出所有「模型@渠道」组合，说明 --models/--channels 用的是哪个 id。"""
+    print("共 %d 个「模型@渠道」组合：" % len(providers))
+    for p in providers:
+        print("  模型id=%-22s 渠道id=%-14s 调用名=%-26s reasoning=%-5s 标称上下文=%s"
+              % (p.get("model_id"), p.get("channel_id"), p.get("model"),
+                 p.get("reasoning", False), p.get("nominal_context_tokens", 0)))
+    print("\n提示：--models / --channels 填的是上面的「模型id / 渠道id」（即 providers.json 里 models[].id、channels[].id），"
+          "\n      不是各渠道实际调用名（aliases），也不是模型显示名。")
+
+
 def main():
     ap = argparse.ArgumentParser(description="多渠道统一模型能力测试")
     ap.add_argument("--providers-file", default=DEFAULT_PROVIDERS_FILE)
@@ -1576,6 +1587,7 @@ def main():
     ap.add_argument("--sample", action="store_true", help="示例模式：每个「模型×渠道」组合只跑 1 条示例")
     ap.add_argument("--once", action="store_true", help="单次模式：每条用例只跑 1 次、不做重试，快速预览结果")
     ap.add_argument("--list-cases", action="store_true")
+    ap.add_argument("--list-models", action="store_true", help="列出 config/providers.json 里的「模型@渠道」组合及其 id")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--no-timeline", action="store_true", help="原始 JSON 不保存逐 chunk 时间线")
@@ -1590,16 +1602,25 @@ def main():
         cfg, cases, providers = load_config(args)
     if not providers and not args.list_cases:
         sys.exit("没有可用组合，请检查 config/providers.json 的 channels/models 与 --models/--channels")
+    all_combos = list(providers)  # 保留过滤前的完整组合，用于报错时列出可用 id
+    if args.list_models:
+        print_models(all_combos)
+        return
     if args.models:
-        ids = set(args.models.split(","))
+        ids = set(x.strip() for x in args.models.split(",") if x.strip())
         providers = [p for p in providers if p["model_id"] in ids]
         if not providers:
-            sys.exit("--models 指定的模型 id 不存在")
+            avail = sorted({p["model_id"] for p in all_combos})
+            sys.exit("--models 指定的模型 id 不存在：%s\n当前 providers.json 里可用的模型 id：%s\n"
+                     "（注意：--models 填的是 models[].id，不是渠道实际调用名 aliases；用 --list-models 查看全部组合）"
+                     % (", ".join(sorted(ids)), ", ".join(avail) or "（无）"))
     if args.channels:
-        ids = set(args.channels.split(","))
+        ids = set(x.strip() for x in args.channels.split(",") if x.strip())
         providers = [p for p in providers if p["channel_id"] in ids]
         if not providers:
-            sys.exit("--channels 指定的渠道 id 不存在")
+            avail = sorted({p["channel_id"] for p in all_combos})
+            sys.exit("--channels 指定的渠道 id 不存在：%s\n当前可用的渠道 id：%s"
+                     % (", ".join(sorted(ids)), ", ".join(avail) or "（无）"))
     if args.max_cases > 0:
         cases = cases[:args.max_cases]
     if args.per_layer > 0:
