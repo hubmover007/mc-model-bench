@@ -925,7 +925,7 @@ def build_test_config(cfg, cases):
     }
 
 
-def render_markdown(agg_by_provider, scores, providers, env=None, test_config=None):
+def render_markdown(agg_by_provider, scores, providers, env=None, test_config=None, cache_ran=False):
     lines = ["# 多渠道模型测试汇总对比\n"]
     w = scores[providers[0]["id"]]["weights"]
     lines.append("> 总评分 = 性能×%.1f + 兼容×%.1f + 质量×%.1f + 长上下文×%.1f（各项满分 100）。\n"
@@ -1071,6 +1071,14 @@ def render_markdown(agg_by_provider, scores, providers, env=None, test_config=No
             s["quality"] if s["quality"] is not None else "-",
             s["long_context"] if s["long_context"] is not None else "-",
             s["total"] if s["total"] is not None else "-"))
+
+    lines.append("\n## 8. 缓存专项（cached_tokens / 前缀复用）\n")
+    if cache_ran:
+        lines.append("已执行：见同目录 `cache_table.md` 与 `report.xlsx` 的「缓存命中」sheet（前缀连打 %d 次 + 前缀复用 + 基线）。" % CACHE_RUNS)
+    else:
+        lines.append("> 本次**未启用**缓存专项，因此无 cached_tokens / 前缀复用 / 缓存类型结论，report.xlsx 也不会生成「缓存命中」sheet。")
+        lines.append(">")
+        lines.append("> 补测方式：`python runner.py --cache`（与常规用例一起跑）或 `python runner.py --cache-only`（只跑缓存，约 %d 次请求/组合，单独生成 cache_report.xlsx）。" % (CACHE_RUNS + 2))
     return "\n".join(lines)
 
 
@@ -1128,16 +1136,8 @@ def load_sample_case(cases_dir):
     }
 
 
-def load_config(args):
-    if not os.path.exists(args.providers_file):
-        sys.exit("配置文件不存在：%s\n请先复制 config/providers-template.json 为 config/providers.json，并填写 api key / 模型调用名。" % args.providers_file)
-    with open(args.providers_file, encoding="utf-8") as f:
-        cfg = json.load(f)
-    # 兼容旧格式（providers 直接是组合）与新版（channels + models）
-    if "channels" in cfg or "models" in cfg:
-        providers = build_combos(cfg)
-    else:
-        providers = list(cfg.get("providers", []))
+def load_cases(args):
+    """按 --layers 加载四层用例（与配置文件无关，便于 --list-cases 在无 providers.json 时也能用）。"""
     cases = []
     for layer in args.layers.split(","):
         layer = layer.strip()
@@ -1149,7 +1149,20 @@ def load_config(args):
             for c in json.load(f):
                 c["layer"] = layer
                 cases.append(c)
-    return cfg, cases, providers
+    return cases
+
+
+def load_config(args):
+    if not os.path.exists(args.providers_file):
+        sys.exit("配置文件不存在：%s\n请先复制 config/providers-template.json 为 config/providers.json，并填写 api key / 模型调用名。" % args.providers_file)
+    with open(args.providers_file, encoding="utf-8") as f:
+        cfg = json.load(f)
+    # 兼容旧格式（providers 直接是组合）与新版（channels + models）
+    if "channels" in cfg or "models" in cfg:
+        providers = build_combos(cfg)
+    else:
+        providers = list(cfg.get("providers", []))
+    return cfg, load_cases(args), providers
 
 
 def render_sample_table(rows):
@@ -1404,6 +1417,70 @@ def run_cache(providers, cfg, out_dir, env_tag=""):
     print("缓存结果已写入：%s（将合并进最终 report.xlsx）" % os.path.join(os.path.abspath(out_dir), "cache_summary.json"))
 
 
+def build_cache_report(out_dir):
+    """只跑缓存专项（--cache-only）时，单独生成缓存报告 cache_report.xlsx + cache_table.md。
+
+    不依赖完整 run 的 summary.json / 四层明细，避免为了看缓存结果被迫重跑 20 条用例。
+    """
+    path = os.path.join(out_dir, "cache_summary.json")
+    if not os.path.exists(path):
+        print("[缓存测试] 没有 cache_summary.json，跳过独立缓存报告")
+        return None
+    with open(path, encoding="utf-8") as f:
+        s = json.load(f)
+
+    xlsx_path = None
+    try:
+        import openpyxl
+        from export_report import fill_cache_sheet
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "缓存命中"
+        fill_cache_sheet(ws, s)
+        xlsx_path = os.path.join(out_dir, "cache_report.xlsx")
+        wb.save(xlsx_path)
+    except Exception as e:  # noqa: BLE001 - 缺 openpyxl 时降级为只出 Markdown
+        print("[缓存测试] 生成 cache_report.xlsx 失败：%s" % e)
+
+    rows = s.get("rows") or []
+    runs_minus_1 = int(s.get("runs", 5)) - 1
+    lines = ["# 缓存命中专项报告", "",
+             "> 前缀 %d token ｜ 连打 %d 次（run1 建缓存，run2~%d 测命中）｜ 环境标注：%s ｜ 主机：%s"
+             % (s.get("prefix_tokens", 0), s.get("runs", 0), runs_minus_1,
+                (s.get("environment") or {}).get("env_tag", ""), (s.get("environment") or {}).get("hostname", "")),
+             "",
+             "| 模型 | 渠道 | 首写tokens | 重复命中 | cached(2~N) | 前缀cached | 基线cached | 前缀复用 | session | 缓存类型 |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
+    for row in rows:
+        sp = row.get("same_prompt") or []
+        hit_vals = [sp[i].get("cached_tokens") or 0 for i in range(1, len(sp))]
+        repeat_hits = sum(1 for c in hit_vals if c > 0)
+        uniq = sorted(set(hit_vals))
+        cached_disp = uniq[0] if len(uniq) == 1 else " / ".join(str(v) for v in hit_vals)
+        sess = row.get("session_id_supported")
+        lines.append("| %s | %s | %s | %d/%d | %s | %s | %s | %s | %s | %s |" % (
+            row.get("model_id"), row.get("channel_name"),
+            "-" if row.get("cache_write_tokens") is None else row.get("cache_write_tokens"),
+            repeat_hits, runs_minus_1, cached_disp,
+            (row.get("prefix_reuse") or {}).get("cached_tokens") or 0,
+            (row.get("baseline") or {}).get("cached_tokens") or 0,
+            "是" if row.get("prefix_hit") else "否",
+            "是" if sess is True else ("否" if sess is False else "未验证"),
+            row.get("cache_type", "")))
+    lines += ["", "## 判定口径", "",
+              "- `重复命中` = same_prompt run2~N 中 cached_tokens>0 的次数 / %d" % runs_minus_1,
+              "- `前缀复用` = 同 session 同前缀换问题后 cached_tokens>0 且大于基线",
+              "- `session` = 该渠道是否接受 `session_id`（否 = 自动去 session 重试）",
+              "- 若渠道完全不返回 cached_tokens 字段，会归为「无缓存」；返回恒定值/反常值会归为「字段不可信」",
+              ""]
+    md_path = os.path.join(out_dir, "cache_table.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print("缓存专项报告已写入：%s" % (xlsx_path or md_path))
+    return xlsx_path or md_path
+
+
 def main():
     ap = argparse.ArgumentParser(description="多渠道统一模型能力测试")
     ap.add_argument("--providers-file", default=DEFAULT_PROVIDERS_FILE)
@@ -1414,7 +1491,8 @@ def main():
     ap.add_argument("--layers", default=",".join(LAYERS))
     ap.add_argument("--max-cases", type=int, default=0)
     ap.add_argument("--per-layer", type=int, default=0, help="每层只保留最后 N 条用例（快速跑子集，如 --per-layer 4）")
-    ap.add_argument("--cache", action="store_true", help="缓存命中专项测试（长前缀连打 + 前缀复用 + 基线）")
+    ap.add_argument("--cache", action="store_true", help="缓存命中专项测试（长前缀连打 + 前缀复用 + 基线），先跑缓存再跑常规用例，合并进同一份 report.xlsx")
+    ap.add_argument("--cache-only", action="store_true", help="只跑缓存专项、不跑 20 条常规用例，单独生成 cache_report.xlsx / cache_table.md")
     ap.add_argument("--parallel", action="store_true", help="渠道级并行：每个「模型×渠道」组合串行，不同组合并行（会轻微影响性能数据精度）")
     ap.add_argument("--sample", action="store_true", help="示例模式：每个「模型×渠道」组合只跑 1 条示例")
     ap.add_argument("--once", action="store_true", help="单次模式：每条用例只跑 1 次、不做重试，快速预览结果")
@@ -1426,8 +1504,12 @@ def main():
     ap.add_argument("--no-ts", action="store_true", help="结果直接写到 --out 目录（不加时间戳子目录，会覆盖历史）")
     args = ap.parse_args()
 
-    cfg, cases, providers = load_config(args)
-    if not providers:
+    # --list-cases 只关心用例，不要求本地已配置 providers.json（方便新机器先看测试集）
+    if args.list_cases and not os.path.exists(args.providers_file):
+        cfg, cases, providers = {}, load_cases(args), []
+    else:
+        cfg, cases, providers = load_config(args)
+    if not providers and not args.list_cases:
         sys.exit("没有可用组合，请检查 config/providers.json 的 channels/models 与 --models/--channels")
     if args.models:
         ids = set(args.models.split(","))
@@ -1463,8 +1545,12 @@ def main():
         print("本次结果输出目录：%s" % os.path.abspath(out_dir))
 
     # 缓存命中专项测试（附加模式：先跑缓存，再继续常规测试，最终合并进同一份 report.xlsx）
-    if args.cache:
+    if (args.cache or args.cache_only) and not args.dry_run and not args.list_cases:
         run_cache(providers, cfg, out_dir, args.env_tag)
+        if args.cache_only:
+            build_cache_report(out_dir)
+            print("\n[缓存专项] 已跳过常规用例（--cache-only）；如需完整报告请去掉该参数、改用 --cache。")
+            return
 
     # 示例模式：复用性能层第 1 条用例，每个组合只跑 1 次，跑完即返回
     if args.sample:
@@ -1586,11 +1672,18 @@ def main():
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    md = render_markdown(agg, scores, providers, env, test_config)
+    md = render_markdown(agg, scores, providers, env, test_config,
+                          cache_ran=bool((args.cache or args.cache_only) and os.path.exists(
+                              os.path.join(out_dir, "cache_summary.json"))))
     with open(os.path.join(out_dir, "summary_table.md"), "w", encoding="utf-8") as f:
         f.write(md)
     print("\n" + md)
     print("\n结果已写入：%s" % os.path.abspath(out_dir))
+
+    if not (args.cache or args.cache_only):
+        print("\n[提示] 本次未启用缓存专项：report.xlsx 里不会有「缓存命中」sheet。"
+              "\n       需要 cached_tokens / 前缀复用 / 缓存类型结论时，请追加 --cache（与常规用例一起跑）"
+              "\n       或 --cache-only（只跑缓存，约 %d 次请求/组合，单独生成 cache_report.xlsx）。" % (CACHE_RUNS + 2))
 
     # 自动生成 Excel 报告（与 export_report.py 同一套逻辑）
     try:

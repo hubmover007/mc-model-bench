@@ -243,12 +243,15 @@ def generate_report(out_dir, template_path, result_path):
         env.get("cpu_cores", ""), env.get("memory_gb", ""), env.get("python", ""), env.get("tz", ""),
         len(providers), os.path.abspath(out_dir),
         "⚠️ 本报告由 raw 兜底重建（原 summary.json 缺失），评分权重/参数配置信息不完整。\n" if summary.get("rebuilt_from_raw") else "")
+    cache_path = os.path.join(out_dir, "cache_summary.json")
+    if not os.path.exists(cache_path):
+        info += ("\n提示：本次运行未启用缓存专项（runner.py --cache / --cache-only），"
+                 "因此没有「缓存命中」sheet，也没有 cached_tokens / 前缀复用结论。\n")
     ws0.cell(row=3, column=2, value=info).alignment = Alignment(vertical="top", wrap_text=True)
 
     fill_experiment_config(wb, summary)
 
     # 合并缓存测试结果（若本次运行了 --cache）
-    cache_path = os.path.join(out_dir, "cache_summary.json")
     if os.path.exists(cache_path):
         with open(cache_path, encoding="utf-8") as f:
             cache_s = json.load(f)

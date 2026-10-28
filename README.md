@@ -60,6 +60,10 @@ python runner.py --models kimi-k3 --channels easyrouter --layers performance,qua
 # 4. 生成报告（自动定位 output/ 下最新一次完整运行目录 run_<时间戳>/）
 python export_report.py --out output --result 测试报告.xlsx
 
+# 4.1 缓存命中专项（可选，默认不跑；不加就**没有**「缓存命中」sheet）
+python runner.py --env-tag "EC2" --cache            # 缓存 + 常规用例，合并进同一份 report.xlsx
+python runner.py --cache-only                        # 只跑缓存（约 7 次请求/组合），出 cache_report.xlsx
+
 # 每次运行结果都会写入带时间戳的子目录（不会覆盖历史）：
 #   output/run_20260826_172743/{raw/, order.json, summary.json, summary_table.md}
 #   需要直接写到固定目录可用 --no-ts；--sample 结果写 output/run_<ts>/sample_summary.json
@@ -77,6 +81,24 @@ python runner.py --providers-file config/providers.mock.json --out output_mock
 3. **确定性长输入**：填充文本用「用例ID」作种子生成，全渠道 prompt 逐字一致。
 4. **相同顺序**：用例固定顺序逐条依次发给所有渠道，时间戳写入 `output/order.json`。
 5. **环境一致**：同一台机器顺序执行，主机/平台信息写入每个结果文件。
+
+## 缓存命中专项（--cache / --cache-only）
+
+**默认不执行**：缓存测试会给每个「模型×渠道」组合多发约 7 次请求（2000 token 长前缀连打 5 次 +
+前缀复用 1 次 + 基线 1 次），所以做成显式开关。不传就**不会**有缓存结论，`report.xlsx` 里也不会出现「缓存命中」sheet
+（`说明` sheet 与 `summary_table.md` 第 8 节会标注「本次未启用缓存专项」）。
+
+| 命令 | 行为 | 产出 |
+|---|---|---|
+| `python runner.py --cache` | 先跑缓存专项，再跑常规用例 | `report.xlsx` 多一个「缓存命中」sheet + `cache_summary.json` |
+| `python runner.py --cache-only` | 只跑缓存，跳过 20 条常规用例（省额度，新跑一个模型时推荐） | `cache_report.xlsx`（单 sheet）+ `cache_table.md` |
+
+判定出的五种缓存类型：`前缀缓存` / `精确匹配缓存(无前缀复用)` / `反常(连打miss但前缀命中)` / `字段不可信` / `无缓存`。
+
+> 若渠道不返回 `prompt_tokens_details.cached_tokens`（easyrouter 上部分模型如此），结论会是
+> **「无缓存」或「字段不可信」——这是渠道透传能力的事实，不是脚本 bug**。
+
+详见 [`docs/代码解读.md`](docs/代码解读.md) 第 3.6 节。
 
 ## 评分公式与权重设计（满分 100，权重可改）
 
