@@ -30,9 +30,18 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(body)
 
+    @staticmethod
+    def _text_of(content):
+        """兼容纯字符串与 content block 数组（Anthropic 风格 cache_control 请求会发数组）。"""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(b.get("text", "") for b in content if isinstance(b, dict))
+        return ""
+
     def _compose(self, body):
         msgs = body.get("messages", [])
-        last_user = next((m.get("content", "") for m in reversed(msgs) if m.get("role") == "user"), "")
+        last_user = next((self._text_of(m.get("content", "")) for m in reversed(msgs) if m.get("role") == "user"), "")
         lu = last_user.lower()
 
         # 工具调用
@@ -47,7 +56,7 @@ class Handler(BaseHTTPRequestHandler):
                 {"name": "张三", "age": 28, "city": "上海", "occupation": "工程师"}, ensure_ascii=False)}
         # 系统提示词
         sys_msgs = [m for m in msgs if m.get("role") == "system"]
-        if sys_msgs and "[TRANSLATE]" in sys_msgs[0]["content"]:
+        if sys_msgs and "[TRANSLATE]" in self._text_of(sys_msgs[0]["content"]):
             return {"role": "assistant", "content": "[TRANSLATE] Hello, world!"}
         # 多轮
         if "名字" in last_user or "猫" in last_user:

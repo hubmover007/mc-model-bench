@@ -305,19 +305,21 @@ CACHE_METHOD = (
     "②前缀复用=同前缀+不同问题(同 session)，看 cached_tokens>0 且 >基线；"
     "③基线=完全不同前缀(独立 session)，应 cached_tokens=0。"
     "判据：cached=null 按 0(未命中)归一；重复命中=run2~5 命中次数/4；前缀复用=前缀cached>0 且 >基线；基线>0 → 字段不可信。"
+    "缓存字段列=渠道 usage 是否真的返回 cached/cache_read 字段(未透传 → 「无缓存」只代表没测到，不能证明模型无缓存能力)。"
+    "Anthropic 系模型需 --cache-control 显式打 cache_control 断点才会建缓存，未打标记的纯文本 prompt 必然 0。"
 )
 
 
 def fill_cache_sheet(ws, s):
     """把缓存测试结果写进一个 worksheet（含测试方法说明）。"""
     headers = ["模型", "渠道", "首写tokens", "重复命中", "cached(2~N)", "前缀cached", "基线cached",
-               "前缀复用", "session", "缓存类型"]
+               "前缀复用", "session", "缓存字段", "缓存类型"]
     for c, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=c, value=h)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
         cell.alignment = Alignment(horizontal="center", vertical="center")
-    for i, w in enumerate([16, 12, 10, 10, 14, 12, 12, 10, 10, 26], 1):
+    for i, w in enumerate([16, 12, 10, 10, 14, 12, 12, 10, 10, 10, 26], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
 
@@ -338,16 +340,18 @@ def fill_cache_sheet(ws, s):
         sess_disp = "是" if sess is True else ("否" if sess is False else "未验证")
         vals = [row.get("model_id"), row.get("channel_name"), write_disp, repeat_disp, cached_disp,
                 pr if pr is not None else 0, bl if bl is not None else 0,
-                "是" if row.get("prefix_hit") else "否", sess_disp, row.get("cache_type", "")]
+                "是" if row.get("prefix_hit") else "否", sess_disp,
+                "透传" if row.get("cache_field_seen") else "未透传", row.get("cache_type", "")]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
         r += 1
     env = s.get("environment") or {}
-    ws.cell(row=r + 1, column=1, value="前缀 %d token | 连打 %d 次 | 环境标注：%s | 主机：%s" % (
-        s.get("prefix_tokens", 0), s.get("runs", 0), env.get("env_tag", ""), env.get("hostname", "")))
+    ws.cell(row=r + 1, column=1, value="前缀 %d token | 连打 %d 次 | cache_control：%s | 环境标注：%s | 主机：%s" % (
+        s.get("prefix_tokens", 0), s.get("runs", 0), "是" if s.get("cache_control") else "否",
+        env.get("env_tag", ""), env.get("hostname", "")))
     mcell = ws.cell(row=r + 3, column=1, value=CACHE_METHOD)
     mcell.alignment = Alignment(wrap_text=True, vertical="top")
-    ws.merge_cells(start_row=r + 3, start_column=1, end_row=r + 4, end_column=10)
+    ws.merge_cells(start_row=r + 3, start_column=1, end_row=r + 4, end_column=11)
 
 
 def fill_experiment_config(wb, summary):

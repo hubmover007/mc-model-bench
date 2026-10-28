@@ -273,12 +273,26 @@ def extract_usage_fields(usage):
     if out["reasoning_tokens"] is None:
         out["reasoning_tokens"] = usage.get("reasoning_tokens")  # 部分渠道放 usage 顶层
     ptd = usage.get("prompt_tokens_details") or {}
+    itd = usage.get("input_tokens_details") or {}  # 部分网关用 input_ 命名
     out["cached_tokens"] = ptd.get("cached_tokens")
     if out["cached_tokens"] is None:
+        out["cached_tokens"] = itd.get("cached_tokens")
+    if out["cached_tokens"] is None:
         out["cached_tokens"] = usage.get("cached_tokens")
+    if out["cached_tokens"] is None:
+        # Anthropic 原生命名：cache_read_input_tokens（读缓存）
+        out["cached_tokens"] = usage.get("cache_read_input_tokens")
+    if out["cached_tokens"] is None:
+        # Gemini 原生命名
+        out["cached_tokens"] = usage.get("cachedContentTokenCount")
     out["cache_write_tokens"] = ptd.get("cache_write_tokens")
     if out["cache_write_tokens"] is None:
+        out["cache_write_tokens"] = itd.get("cache_write_tokens")
+    if out["cache_write_tokens"] is None:
         out["cache_write_tokens"] = usage.get("cache_write_tokens")
+    if out["cache_write_tokens"] is None:
+        # Anthropic 原生命名：cache_creation_input_tokens（写缓存）
+        out["cache_write_tokens"] = usage.get("cache_creation_input_tokens")
     return out
 
 
@@ -393,7 +407,7 @@ def run_stream(url, headers, body, timeout):
     metrics = compute_metrics(timeline, reasoning_timeline, full_text, reasoning_text, usage, finish_reason, e2e_ms, True, status_code)
     return {"metrics": metrics, "output": {"text": full_text, "reasoning": reasoning_text, "tool_calls": tool_calls},
             "sse": {"done_seen": done_seen, "issues": sse_issues, "timeline": timeline},
-            "usage_source": "stream_final" if usage else "estimated"}
+            "usage": usage, "usage_source": "stream_final" if usage else "estimated"}
 
 
 def run_nonstream(url, headers, body, timeout):
@@ -435,7 +449,7 @@ def run_nonstream(url, headers, body, timeout):
     e2e_ms = (time.monotonic() - started) * 1000.0
     metrics = compute_metrics([], [], full_text, reasoning_text, usage, finish_reason, e2e_ms, False, status_code)
     return {"metrics": metrics, "output": {"text": full_text, "reasoning": reasoning_text, "tool_calls": tool_calls},
-            "sse": None, "usage_source": "response" if usage else "estimated"}
+            "sse": None, "usage": usage, "usage_source": "response" if usage else "estimated"}
 
 
 # ---------------------------------------------------------------------------
@@ -1283,14 +1297,57 @@ def classify_cache(same_prompt, prefix_cached, baseline_cached, repeat_hit, pref
     return "无缓存"
 
 
+CACHE_FIELD_NAMES = ("cached_tokens", "cache_read_input_tokens", "cachedContentTokenCount",
+                     "cache_write_tokens", "cache_creation_input_tokens")
+
+
+def usage_cache_field_seen(usage):
+    """渠道返回的 usage 里是否出现了任何缓存相关字段（决定「无缓存」还是「字段未透传」）。"""
+    if not isinstance(usage, dict):
+        return False
+    stack = [usage]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if k in CACHE_FIELD_NAMES:
+                    return True
+                if isinstance(v, (dict, list)):
+                    stack.append(v)
+        elif isinstance(cur, list):
+            stack.extend(x for x in cur if isinstance(x, (dict, list)))
+    return False
+
+
+def attach_cache_control(body, prefix, question):
+    """把纯文本 prompt 改成 Anthropic 风格 content block，并在长前缀上打 cache_control 断点。
+
+    为什么需要：Anthropic 系模型的 prompt caching **不是自动的**，必须在请求里显式标记
+    `cache_control: {"type": "ephemeral"}` 才会建缓存；纯字符串 prompt 永远不会命中。
+    OpenAI 系是自动前缀缓存，多加这个字段一般会被忽略（可安全用于对照实验）。
+    返回是否成功改写。
+    """
+    msgs = body.get("messages")
+    if not isinstance(msgs, list) or not msgs:
+        return False
+    last = msgs[-1]
+    if isinstance(last.get("content"), str):
+        last["content"] = [
+            {"type": "text", "text": prefix, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": question},
+        ]
+        return True
+    return False
+
+
 def render_cache_table(rows):
     print("\n" + "=" * 140)
     print("  缓存命中测试结果（前缀 %d token，连打 %d 次：run1 建缓存，run2~%d 测命中）" % (
         CACHE_PREFIX_TOKENS, CACHE_RUNS, CACHE_RUNS))
     print("=" * 140)
-    print("%-14s %-9s %-9s %-9s %-14s %-11s %-11s %-9s %-9s %s" % (
-        "模型", "渠道", "首写tokens", "重复命中", "cached(2~N)", "前缀cached", "基线cached", "前缀复用", "session", "缓存类型"))
-    print("-" * 140)
+    print("%-14s %-9s %-9s %-9s %-14s %-11s %-11s %-9s %-9s %-9s %s" % (
+        "模型", "渠道", "首写tokens", "重复命中", "cached(2~N)", "前缀cached", "基线cached", "前缀复用", "session", "缓存字段", "缓存类型"))
+    print("-" * 150)
     for r in rows:
         sp = r.get("same_prompt", [])
         write_tk = r.get("cache_write_tokens")
@@ -1304,17 +1361,22 @@ def render_cache_table(rows):
         repeat_disp = "%d/%d" % (repeat_hits, CACHE_RUNS - 1)
         sess = r.get("session_id_supported")
         sess_disp = "是" if sess is True else ("否" if sess is False else "未验证")
-        print("%-14s %-9s %-9s %-9s %-14s %-11s %-11s %-9s %-9s %s" % (
+        field_disp = "透传" if r.get("cache_field_seen") else "未透传"
+        print("%-14s %-9s %-9s %-9s %-14s %-11s %-11s %-9s %-9s %-9s %s" % (
             r.get("model_id"), r.get("channel_name"), write_disp, repeat_disp, cached_disp,
-            pr, bl, "✅" if r.get("prefix_hit") else "❌", sess_disp, r.get("cache_type", "-")))
+            pr, bl, "✅" if r.get("prefix_hit") else "❌", sess_disp, field_disp, r.get("cache_type", "-")))
     print("\n说明：首写=run1 的 cache_write_tokens(建立缓存)；重复命中=run2~%d 中 cached>0 的次数/%d；"
           "cached 为 null 按 0(未命中)归一；前缀复用=前缀cached>0 且 >基线(增量)；基线>0 → 字段不可信；"
-          "session=该渠道是否接受 session_id(否=自动去 session 重试)。\n" % (CACHE_RUNS, CACHE_RUNS - 1))
+          "session=该渠道是否接受 session_id(否=自动去 session 重试)；"
+          "缓存字段=渠道 usage 里是否真的返回 cached/cache_read 字段(未透传 → 无法判定缓存能力)。\n" % (CACHE_RUNS, CACHE_RUNS - 1))
 
 
-def run_cache(providers, cfg, out_dir, env_tag=""):
+def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
     print("[缓存测试] 每个「模型×渠道」组合：长前缀连打 %d 次(run1 建缓存, run2~%d 测命中) + 前缀复用 + 基线，共 %d 个组合" % (
         CACHE_RUNS, CACHE_RUNS, len(providers)))
+    if cache_control:
+        print("[缓存测试] 已启用 --cache-control：长前缀会以 content block + cache_control(ephemeral) 发送"
+              "（Anthropic 系必须显式标记才会建缓存）")
     env = env_info(env_tag)
     prefix_a = build_filler(int(CACHE_PREFIX_TOKENS * 1.2), stable_seed("cache_prefix_a"))
     prefix_b = build_filler(int(CACHE_PREFIX_TOKENS * 1.2), stable_seed("cache_prefix_b"))
@@ -1337,6 +1399,8 @@ def run_cache(providers, cfg, out_dir, env_tag=""):
             nonlocal session_supported
             case = {"id": "cache_tmp", "prompt": prefix + "\n\n" + question, "stream": True, "max_tokens": 512}
             body = build_request_body(p, case, cfg.get("shared_request_params", {}), cfg.get("reasoning_max_tokens", 16384))
+            if cache_control:
+                attach_cache_control(body, prefix, question)  # Anthropic 系必须显式标记断点
             url = p["base_url"].rstrip("/") + "/chat/completions"
             headers = {"Authorization": "Bearer " + resolve_api_key(p), "Content-Type": "application/json"}
             if session_id and session_supported is not False:
@@ -1361,21 +1425,27 @@ def run_cache(providers, cfg, out_dir, env_tag=""):
         for i in range(CACHE_RUNS):
             r = call(p, prefix_a, q1, session_shared)
             m = (r.get("metrics") or {}) if not r.get("error") else {}
+            usage = r.get("usage")
             same.append({"run": i + 1, "ttft_ms": m.get("ttft_ms"), "e2e_ms": m.get("e2e_ms"),
                          "cached_tokens": m.get("cached_tokens"), "cache_write_tokens": m.get("cache_write_tokens"),
-                         "prompt_tokens": m.get("prompt_tokens"), "error": r.get("error")})
+                         "prompt_tokens": m.get("prompt_tokens"), "error": r.get("error"),
+                         "cache_field_seen": usage_cache_field_seen(usage), "usage": usage})
             time.sleep(1)
         entry["same_prompt"] = same
         # 用例2：前缀复用（同 session、同前缀、换问题）
         r2 = call(p, prefix_a, q2, session_shared)
         m2 = (r2.get("metrics") or {}) if not r2.get("error") else {}
+        usage2 = r2.get("usage")
         entry["prefix_reuse"] = {"cached_tokens": m2.get("cached_tokens"), "cache_write_tokens": m2.get("cache_write_tokens"),
-                                 "prompt_tokens": m2.get("prompt_tokens"), "ttft_ms": m2.get("ttft_ms"), "error": r2.get("error")}
+                                 "prompt_tokens": m2.get("prompt_tokens"), "ttft_ms": m2.get("ttft_ms"), "error": r2.get("error"),
+                                 "cache_field_seen": usage_cache_field_seen(usage2), "usage": usage2}
         # 用例3：基线（独立 session、不同前缀，应不命中）
         r3 = call(p, prefix_b, q1, session_baseline)
         m3 = (r3.get("metrics") or {}) if not r3.get("error") else {}
+        usage3 = r3.get("usage")
         entry["baseline"] = {"cached_tokens": m3.get("cached_tokens"), "cache_write_tokens": m3.get("cache_write_tokens"),
-                             "prompt_tokens": m3.get("prompt_tokens"), "ttft_ms": m3.get("ttft_ms"), "error": r3.get("error")}
+                             "prompt_tokens": m3.get("prompt_tokens"), "ttft_ms": m3.get("ttft_ms"), "error": r3.get("error"),
+                             "cache_field_seen": usage_cache_field_seen(usage3), "usage": usage3}
         # —— 指标判定：null→0 归一化后拆分 repeat_hit / prefix_hit ——
         hit_vals = [_cached(s.get("cached_tokens")) for s in same[1:]]  # run2~N 的命中值
         repeat_hits = sum(1 for c in hit_vals if c > 0)
@@ -1384,6 +1454,9 @@ def run_cache(providers, cfg, out_dir, env_tag=""):
         bl = _cached(entry["baseline"].get("cached_tokens"))
         prefix_hit = pr > 0 and pr > bl                     # 增量命中：>0 且 > 基线
         entry["session_id_supported"] = session_supported   # 待验证项：EasyRouter 是否支持 session_id
+        entry["cache_control"] = bool(cache_control)
+        entry["cache_field_seen"] = any(
+            x.get("cache_field_seen") for x in (same + [entry["prefix_reuse"], entry["baseline"]]))
         entry["cache_write_tokens"] = same[0].get("cache_write_tokens") if same else None  # run1 首次写入
         entry["repeat_hit"] = repeat_hit
         entry["prefix_hit"] = prefix_hit
@@ -1402,6 +1475,7 @@ def run_cache(providers, cfg, out_dir, env_tag=""):
     render_cache_table(rows)
     summary = {
         "mode": "cache", "prefix_tokens": CACHE_PREFIX_TOKENS, "runs": CACHE_RUNS,
+        "cache_control": bool(cache_control),
         "null_normalized": True,
         "session_design": "连打+前缀复用共用 session（{渠道}_{模型}_cache_shared），基线独立 session；不支持 session_id 时自动 fallback",
         "metrics": {
@@ -1444,14 +1518,15 @@ def build_cache_report(out_dir):
         print("[缓存测试] 生成 cache_report.xlsx 失败：%s" % e)
 
     rows = s.get("rows") or []
-    runs_minus_1 = int(s.get("runs", 5)) - 1
+    runs = int(s.get("runs", 5))
+    runs_minus_1 = runs - 1
     lines = ["# 缓存命中专项报告", "",
              "> 前缀 %d token ｜ 连打 %d 次（run1 建缓存，run2~%d 测命中）｜ 环境标注：%s ｜ 主机：%s"
-             % (s.get("prefix_tokens", 0), s.get("runs", 0), runs_minus_1,
+             % (s.get("prefix_tokens", 0), runs, runs,
                 (s.get("environment") or {}).get("env_tag", ""), (s.get("environment") or {}).get("hostname", "")),
              "",
-             "| 模型 | 渠道 | 首写tokens | 重复命中 | cached(2~N) | 前缀cached | 基线cached | 前缀复用 | session | 缓存类型 |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+             "| 模型 | 渠道 | 首写tokens | 重复命中 | cached(2~N) | 前缀cached | 基线cached | 前缀复用 | session | 缓存字段 | 缓存类型 |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
     for row in rows:
         sp = row.get("same_prompt") or []
         hit_vals = [sp[i].get("cached_tokens") or 0 for i in range(1, len(sp))]
@@ -1459,7 +1534,7 @@ def build_cache_report(out_dir):
         uniq = sorted(set(hit_vals))
         cached_disp = uniq[0] if len(uniq) == 1 else " / ".join(str(v) for v in hit_vals)
         sess = row.get("session_id_supported")
-        lines.append("| %s | %s | %s | %d/%d | %s | %s | %s | %s | %s | %s |" % (
+        lines.append("| %s | %s | %s | %d/%d | %s | %s | %s | %s | %s | %s | %s |" % (
             row.get("model_id"), row.get("channel_name"),
             "-" if row.get("cache_write_tokens") is None else row.get("cache_write_tokens"),
             repeat_hits, runs_minus_1, cached_disp,
@@ -1467,12 +1542,15 @@ def build_cache_report(out_dir):
             (row.get("baseline") or {}).get("cached_tokens") or 0,
             "是" if row.get("prefix_hit") else "否",
             "是" if sess is True else ("否" if sess is False else "未验证"),
+            "透传" if row.get("cache_field_seen") else "未透传",
             row.get("cache_type", "")))
     lines += ["", "## 判定口径", "",
               "- `重复命中` = same_prompt run2~N 中 cached_tokens>0 的次数 / %d" % runs_minus_1,
               "- `前缀复用` = 同 session 同前缀换问题后 cached_tokens>0 且大于基线",
               "- `session` = 该渠道是否接受 `session_id`（否 = 自动去 session 重试）",
-              "- 若渠道完全不返回 cached_tokens 字段，会归为「无缓存」；返回恒定值/反常值会归为「字段不可信」",
+              "- `缓存字段` = 渠道 usage 是否真的返回 cached/cache_read 字段；**未透传**时「无缓存」只能说明没测到，不能证明模型无缓存能力",
+              "- 本次是否给长前缀打了 `cache_control` 断点：**%s**（Anthropic 系模型必须显式标记才会建缓存）"
+              % ("是（--cache-control）" if s.get("cache_control") else "否"),
               ""]
     md_path = os.path.join(out_dir, "cache_table.md")
     with open(md_path, "w", encoding="utf-8") as f:
@@ -1493,6 +1571,7 @@ def main():
     ap.add_argument("--per-layer", type=int, default=0, help="每层只保留最后 N 条用例（快速跑子集，如 --per-layer 4）")
     ap.add_argument("--cache", action="store_true", help="缓存命中专项测试（长前缀连打 + 前缀复用 + 基线），先跑缓存再跑常规用例，合并进同一份 report.xlsx")
     ap.add_argument("--cache-only", action="store_true", help="只跑缓存专项、不跑 20 条常规用例，单独生成 cache_report.xlsx / cache_table.md")
+    ap.add_argument("--cache-control", action="store_true", help="缓存专项给长前缀打 Anthropic 风格 cache_control 断点（Anthropic 系模型必须显式标记才建缓存）")
     ap.add_argument("--parallel", action="store_true", help="渠道级并行：每个「模型×渠道」组合串行，不同组合并行（会轻微影响性能数据精度）")
     ap.add_argument("--sample", action="store_true", help="示例模式：每个「模型×渠道」组合只跑 1 条示例")
     ap.add_argument("--once", action="store_true", help="单次模式：每条用例只跑 1 次、不做重试，快速预览结果")
@@ -1546,7 +1625,7 @@ def main():
 
     # 缓存命中专项测试（附加模式：先跑缓存，再继续常规测试，最终合并进同一份 report.xlsx）
     if (args.cache or args.cache_only) and not args.dry_run and not args.list_cases:
-        run_cache(providers, cfg, out_dir, args.env_tag)
+        run_cache(providers, cfg, out_dir, args.env_tag, cache_control=args.cache_control)
         if args.cache_only:
             build_cache_report(out_dir)
             print("\n[缓存专项] 已跳过常规用例（--cache-only）；如需完整报告请去掉该参数、改用 --cache。")
