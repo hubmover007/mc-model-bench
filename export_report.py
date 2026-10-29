@@ -304,24 +304,26 @@ CACHE_METHOD = (
     "①连打5次=同前缀+同问题连发5次(间隔1s)：run1 记 cache_write_tokens(建立缓存)，run2~5 看 cached_tokens>0 计重复命中；"
     "②前缀复用=同前缀+不同问题(同 session)，看 cached_tokens>0 且 >基线；"
     "③基线=完全不同前缀(独立 session)，应 cached_tokens=0。"
+    "④复用复测=同前缀+同新问题再发一次：首次 miss 但复测命中 → 缓存有效，是网关按请求体路由到不同节点(节点间不共享缓存)。"
     "判据：cached=null 按 0(未命中)归一；重复命中=run2~5 命中次数/4；前缀复用=前缀cached>0 且 >基线；基线>0 → 字段不可信。"
     "缓存字段列=渠道 usage 是否真的返回 cached/cache_read 字段(未透传 → 「无缓存」只代表没测到，不能证明模型无缓存能力)。"
     "Anthropic 系模型需 --cache-control 显式打 cache_control 断点才会建缓存，未打标记的纯文本 prompt 必然 0。"
     "若已打标记仍为 0，用 --anthropic-native 走原生 /messages 复测：仍为 0 说明上游未启用缓存，"
-    "原生命中而兼容层为 0 说明网关吞了断点。"
+    "原生命中而兼容层为 0 说明网关吞了断点。原生模式下 usage 的 input_tokens 只含未缓存部分，"
+    "prompt_tokens 总量 = input_tokens + cache_read_input_tokens + cache_creation_input_tokens。"
 )
 
 
 def fill_cache_sheet(ws, s):
     """把缓存测试结果写进一个 worksheet（含测试方法说明）。"""
-    headers = ["模型", "渠道", "首写tokens", "重复命中", "cached(2~N)", "前缀cached", "基线cached",
+    headers = ["模型", "渠道", "首写tokens", "重复命中", "cached(2~N)", "前缀cached", "复用复测", "基线cached",
                "前缀复用", "session", "缓存字段", "缓存类型"]
     for c, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=c, value=h)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
         cell.alignment = Alignment(horizontal="center", vertical="center")
-    for i, w in enumerate([16, 12, 10, 10, 14, 12, 12, 10, 10, 10, 26], 1):
+    for i, w in enumerate([16, 12, 10, 10, 14, 12, 12, 12, 10, 10, 10, 26], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
 
@@ -335,13 +337,17 @@ def fill_cache_sheet(ws, s):
         uniq = sorted(set(hit_vals))
         cached_disp = uniq[0] if len(uniq) == 1 else " / ".join(str(v) for v in hit_vals)
         pr = row.get("prefix_reuse", {}).get("cached_tokens")
+        ret = row.get("prefix_reuse_retry", {}).get("cached_tokens")
         bl = row.get("baseline", {}).get("cached_tokens")
         repeat_hits = sum(1 for c in hit_vals if (c or 0) > 0)
         repeat_disp = "%d/%d" % (repeat_hits, runs_minus_1)
         sess = row.get("session_id_supported")
-        sess_disp = "是" if sess is True else ("否" if sess is False else "未验证")
+        if row.get("anthropic_native"):
+            sess_disp = "不适用"
+        else:
+            sess_disp = "是" if sess is True else ("否" if sess is False else "未验证")
         vals = [row.get("model_id"), row.get("channel_name"), write_disp, repeat_disp, cached_disp,
-                pr if pr is not None else 0, bl if bl is not None else 0,
+                pr if pr is not None else 0, ret if ret is not None else 0, bl if bl is not None else 0,
                 "是" if row.get("prefix_hit") else "否", sess_disp,
                 "透传" if row.get("cache_field_seen") else "未透传", row.get("cache_type", "")]
         for c, v in enumerate(vals, 1):

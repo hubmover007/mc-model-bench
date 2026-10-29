@@ -42,6 +42,23 @@ class AnthropicNativeTest(unittest.TestCase):
     def test_parse_usage_empty(self):
         self.assertIsNone(runner.parse_anthropic_usage(None)["cached_tokens"])
 
+    def test_metrics_total_prompt_includes_cache(self):
+        """原生 usage 的 input_tokens 只含未缓存部分，prompt_tokens 必须是三段之和。"""
+        m = runner.anthropic_metrics({"input_tokens": 21, "cache_read_input_tokens": 3041,
+                                      "cache_creation_input_tokens": 0, "output_tokens": 322}, e2e_ms=5231.5)
+        self.assertEqual(m["prompt_tokens"], 3062)
+        self.assertEqual(m["uncached_input_tokens"], 21)
+        self.assertEqual(m["cached_tokens"], 3041)
+        self.assertEqual(m["completion_tokens"], 322)
+        self.assertEqual(m["e2e_ms"], 5231.5)
+
+    def test_metrics_creation_counts_into_total(self):
+        m = runner.anthropic_metrics({"input_tokens": 21, "cache_read_input_tokens": 0,
+                                      "cache_creation": {"ephemeral_5m_input_tokens": 3041,
+                                                         "ephemeral_1h_input_tokens": 0}})
+        self.assertEqual(m["prompt_tokens"], 3062)
+        self.assertEqual(m["cache_write_tokens"], 3041)
+
 
 class ExtractUsageTest(unittest.TestCase):
     def test_openai_style(self):

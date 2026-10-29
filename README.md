@@ -85,8 +85,8 @@ python runner.py --providers-file config/providers.mock.json --out output_mock
 
 ## 缓存命中专项（--cache / --cache-only）
 
-**默认不执行**：缓存测试会给每个「模型×渠道」组合多发约 7 次请求（2000 token 长前缀连打 5 次 +
-前缀复用 1 次 + 基线 1 次），所以做成显式开关。不传就**不会**有缓存结论，`report.xlsx` 里也不会出现「缓存命中」sheet
+**默认不执行**：缓存测试会给每个「模型×渠道」组合多发 8 次请求（2000 token 长前缀连打 5 次 +
+前缀复用 1 次 + 复用复测 1 次 + 基线 1 次），所以做成显式开关。不传就**不会**有缓存结论，`report.xlsx` 里也不会出现「缓存命中」sheet
 （`说明` sheet 与 `summary_table.md` 第 8 节会标注「本次未启用缓存专项」）。
 
 | 命令 | 行为 | 产出 |
@@ -97,7 +97,8 @@ python runner.py --providers-file config/providers.mock.json --out output_mock
 | `python runner.py --cache-only --cache-control --anthropic-native` | 同上，但走 **Anthropic 原生 `/messages`** 协议（easyrouter 支持），可真正验证断点是否生效 | 同上（协议列为「Anthropic 原生」） |
 
 判定出的五种缓存类型：`前缀缓存` / `精确匹配缓存(无前缀复用)` / `反常(连打miss但前缀命中)` / `字段不可信` / `无缓存`。
-表格里还有一列 **`缓存字段`**：渠道 usage 是否真的返回了 `cached_tokens` / `cache_read_input_tokens` / `cachedContentTokenCount`。
+表格里还有 **`缓存字段`**（渠道 usage 是否真的返回了 `cached_tokens` / `cache_read_input_tokens` / `cachedContentTokenCount`）
+和 **`复用复测`**（同前缀 + 同新问题再发一次：首次 miss 但复测命中 → 缓存其实有效，只是网关按请求体路由到了不同上游节点）。
 
 ### 判定为「无缓存」时的三种可能（必须区分）
 
@@ -110,6 +111,11 @@ python runner.py --providers-file config/providers.mock.json --out output_mock
 
 `cache_summary.json` 会保存 run1 的**实发请求体** `request_body`，可直接确认断点有没有发出去；
 `--cache-control` 若被网关 400/422 拒绝，会自动降级为纯文本重试并记 `cache_control_supported=false`。
+
+> **实测结论（easyrouter / claude-opus-5-5，2026-10-29）**：OpenAI 兼容层 `--cache-control` → 全 0；
+> 切到 `--anthropic-native` 后 run1 `cache_creation_input_tokens=3041`、run2~5 `cache_read_input_tokens=3041`
+> （4/4 命中）→ **缓存能力本身没问题，是兼容层丢弃了 `cache_control` 断点**。原生模式下表里的
+> `prompt_tokens` 是 `input_tokens + cache_read + cache_creation` 的总量（Anthropic 的 `input_tokens` 只含未缓存部分）。
 
 > 对照建议：同一条缓存测试跑一个**支持自动前缀缓存的模型**（如 OpenAI 系）作为阳性对照。
 > 它命中 → 说明测试链路没问题，问题在 claude/渠道；它也不命中 → 先查链路。

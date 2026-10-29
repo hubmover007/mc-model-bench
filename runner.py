@@ -1129,7 +1129,7 @@ def render_markdown(agg_by_provider, scores, providers, env=None, test_config=No
     else:
         lines.append("> 本次**未启用**缓存专项，因此无 cached_tokens / 前缀复用 / 缓存类型结论，report.xlsx 也不会生成「缓存命中」sheet。")
         lines.append(">")
-        lines.append("> 补测方式：`python runner.py --cache`（与常规用例一起跑）或 `python runner.py --cache-only`（只跑缓存，约 %d 次请求/组合，单独生成 cache_report.xlsx）。" % (CACHE_RUNS + 2))
+        lines.append("> 补测方式：`python runner.py --cache`（与常规用例一起跑）或 `python runner.py --cache-only`（只跑缓存，约 %d 次请求/组合，单独生成 cache_report.xlsx）。" % (CACHE_RUNS + 3))
     return "\n".join(lines)
 
 
@@ -1382,9 +1382,9 @@ def render_cache_table(rows):
     print("  缓存命中测试结果（前缀 %d token，连打 %d 次：run1 建缓存，run2~%d 测命中）" % (
         CACHE_PREFIX_TOKENS, CACHE_RUNS, CACHE_RUNS))
     print("=" * 140)
-    print("%-14s %-9s %-9s %-9s %-14s %-11s %-11s %-9s %-9s %-9s %s" % (
-        "模型", "渠道", "首写tokens", "重复命中", "cached(2~N)", "前缀cached", "基线cached", "前缀复用", "session", "缓存字段", "缓存类型"))
-    print("-" * 150)
+    print("%-14s %-9s %-9s %-9s %-20s %-12s %-12s %-12s %-9s %-9s %s" % (
+        "模型", "渠道", "首写tokens", "重复命中", "cached(2~N)", "前缀cached", "复用复测", "基线cached", "前缀复用", "缓存字段", "缓存类型"))
+    print("-" * 158)
     for r in rows:
         sp = r.get("same_prompt", [])
         write_tk = r.get("cache_write_tokens")
@@ -1394,6 +1394,7 @@ def render_cache_table(rows):
         cached_disp = str(uniq[0]) if len(uniq) == 1 else " / ".join(str(v) for v in hit_vals)
         pr = _cached(r.get("prefix_reuse", {}).get("cached_tokens"))
         bl = _cached(r.get("baseline", {}).get("cached_tokens"))
+        ret = _cached(r.get("prefix_reuse_retry", {}).get("cached_tokens"))
         repeat_hits = sum(1 for c in hit_vals if c > 0)
         repeat_disp = "%d/%d" % (repeat_hits, CACHE_RUNS - 1)
         sess = r.get("session_id_supported")
@@ -1402,12 +1403,13 @@ def render_cache_table(rows):
         else:
             sess_disp = "是" if sess is True else ("否" if sess is False else "未验证")
         field_disp = "透传" if r.get("cache_field_seen") else "未透传"
-        print("%-14s %-9s %-9s %-9s %-14s %-11s %-11s %-9s %-9s %-9s %s" % (
+        print("%-14s %-9s %-9s %-9s %-20s %-12s %-12s %-12s %-9s %-9s %s" % (
             r.get("model_id"), r.get("channel_name"), write_disp, repeat_disp, cached_disp,
-            pr, bl, "✅" if r.get("prefix_hit") else "❌", sess_disp, field_disp, r.get("cache_type", "-")))
+            pr, ret, bl, "✅" if r.get("prefix_hit") else "❌", field_disp, r.get("cache_type", "-")))
     print("\n说明：首写=run1 的 cache_write_tokens(建立缓存)；重复命中=run2~%d 中 cached>0 的次数/%d；"
-          "cached 为 null 按 0(未命中)归一；前缀复用=前缀cached>0 且 >基线(增量)；基线>0 → 字段不可信；"
-          "session=该渠道是否接受 session_id(否=自动去 session 重试)；"
+          "cached 为 null 按 0(未命中)归一；前缀复用=前缀cached>0 且 >基线(增量)；"
+          "复用复测=同前缀+同新问题再发一次(首次 miss 但复测命中 → 网关按请求体路由到不同节点)；"
+          "基线>0 → 字段不可信；session=该渠道是否接受 session_id(否=自动去 session 重试)；"
           "缓存字段=渠道 usage 里是否真的返回 cached/cache_read 字段(未透传 → 无法判定缓存能力)。\n" % (CACHE_RUNS, CACHE_RUNS - 1))
 
 
@@ -1431,7 +1433,11 @@ def build_anthropic_message_body(model, prefix, question, max_tokens=512, cache_
 
 
 def parse_anthropic_usage(usage):
-    """解析 Anthropic 原生 usage 里的缓存字段（读/写/输入输出 token）。"""
+    """解析 Anthropic 原生 usage 里的缓存字段（读/写/输入输出 token）。
+
+    注意 Anthropic 的 `input_tokens` 只统计**未命中缓存**的输入 token（真正的 prompt 总量 =
+    input + cache_read + cache_creation），所以调用方要自己加总。
+    """
     usage = usage or {}
     read = usage.get("cache_read_input_tokens")
     write = usage.get("cache_creation_input_tokens")
@@ -1446,6 +1452,19 @@ def parse_anthropic_usage(usage):
         "cached_tokens": read,
         "cache_write_tokens": write,
     }
+
+
+def anthropic_metrics(usage, e2e_ms=None, ttft_ms=None):
+    """把 Anthropic usage 转成统一的 metrics（prompt_tokens 为「含缓存的输入总量」）。"""
+    u = parse_anthropic_usage(usage)
+    read = u["cached_tokens"] or 0
+    write = u["cache_write_tokens"] or 0
+    uncached = u["prompt_tokens"]
+    total = None if uncached is None else uncached + read + write
+    return {"cached_tokens": u["cached_tokens"], "cache_write_tokens": u["cache_write_tokens"],
+            "prompt_tokens": total, "uncached_input_tokens": uncached,
+            "completion_tokens": u["completion_tokens"],
+            "ttft_ms": ttft_ms, "e2e_ms": e2e_ms}
 
 
 def call_anthropic_native(p, prefix, question, timeout, cache_control=True, max_tokens=512):
@@ -1470,11 +1489,8 @@ def call_anthropic_native(p, prefix, question, timeout, cache_control=True, max_
         data = resp.json()
     except ValueError:
         return {"error": {"type": "bad_json", "message": resp.text[:200]}}
-    u = parse_anthropic_usage(data.get("usage"))
-    metrics = {"cached_tokens": u["cached_tokens"], "cache_write_tokens": u["cache_write_tokens"],
-               "prompt_tokens": u["prompt_tokens"], "completion_tokens": u["completion_tokens"],
-               "ttft_ms": None, "e2e_ms": round(e2e_ms, 1)}
-    return {"metrics": metrics, "usage": data.get("usage"), "request_body": body}
+    return {"metrics": anthropic_metrics(data.get("usage"), e2e_ms=round(e2e_ms, 1)),
+            "usage": data.get("usage"), "request_body": body}
 
 
 def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False, anthropic_native=False):
@@ -1566,7 +1582,8 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False, anthropi
             usage = r.get("usage")
             same.append({"run": i + 1, "ttft_ms": m.get("ttft_ms"), "e2e_ms": m.get("e2e_ms"),
                          "cached_tokens": m.get("cached_tokens"), "cache_write_tokens": m.get("cache_write_tokens"),
-                         "prompt_tokens": m.get("prompt_tokens"), "error": r.get("error"),
+                         "prompt_tokens": m.get("prompt_tokens"), "uncached_input_tokens": m.get("uncached_input_tokens"),
+                         "error": r.get("error"),
                          "cache_field_seen": usage_cache_field_seen(usage),
                          "cache_fields": cache_field_paths(usage), "usage": usage,
                          "request_body": r.get("request_body") if i == 0 else None})
@@ -1577,9 +1594,20 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False, anthropi
         m2 = (r2.get("metrics") or {}) if not r2.get("error") else {}
         usage2 = r2.get("usage")
         entry["prefix_reuse"] = {"cached_tokens": m2.get("cached_tokens"), "cache_write_tokens": m2.get("cache_write_tokens"),
-                                 "prompt_tokens": m2.get("prompt_tokens"), "ttft_ms": m2.get("ttft_ms"), "error": r2.get("error"),
+                                 "prompt_tokens": m2.get("prompt_tokens"), "uncached_input_tokens": m2.get("uncached_input_tokens"),
+                                 "ttft_ms": m2.get("ttft_ms"), "error": r2.get("error"),
                                  "cache_field_seen": usage_cache_field_seen(usage2),
                                  "cache_fields": cache_field_paths(usage2), "usage": usage2}
+        # 用例2b：前缀复用复测（同前缀 + 同新问题，请求体完全一致）
+        # 用途：若「换问题首次 miss、同一请求体复测命中」，说明缓存没坏，而是网关按请求体指纹路由到不同节点/密钥
+        r2b = call(p, prefix_a, q2, session_shared)
+        m2b = (r2b.get("metrics") or {}) if not r2b.get("error") else {}
+        usage2b = r2b.get("usage")
+        entry["prefix_reuse_retry"] = {"cached_tokens": m2b.get("cached_tokens"), "cache_write_tokens": m2b.get("cache_write_tokens"),
+                                       "prompt_tokens": m2b.get("prompt_tokens"), "uncached_input_tokens": m2b.get("uncached_input_tokens"),
+                                       "ttft_ms": m2b.get("ttft_ms"), "error": r2b.get("error"),
+                                       "cache_field_seen": usage_cache_field_seen(usage2b),
+                                       "cache_fields": cache_field_paths(usage2b), "usage": usage2b}
         # 用例3：基线（独立 session、不同前缀，应不命中）
         r3 = call(p, prefix_b, q1, session_baseline)
         m3 = (r3.get("metrics") or {}) if not r3.get("error") else {}
@@ -1601,17 +1629,26 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False, anthropi
         entry["cache_control"] = bool(cache_control)
         entry["cache_control_supported"] = cache_control_supported
         entry["cache_field_seen"] = any(
-            x.get("cache_field_seen") for x in (same + [entry["prefix_reuse"], entry["baseline"]]))
+            x.get("cache_field_seen") for x in (same + [entry["prefix_reuse"], entry["prefix_reuse_retry"], entry["baseline"]]))
         _fields = set()
-        for _x in same + [entry["prefix_reuse"], entry["baseline"]]:
+        for _x in same + [entry["prefix_reuse"], entry["prefix_reuse_retry"], entry["baseline"]]:
             _fields.update(_x.get("cache_fields") or [])
         entry["cache_fields_present"] = sorted(_fields)
         entry["cache_write_tokens"] = same[0].get("cache_write_tokens") if same else None  # run1 首次写入
         entry["repeat_hit"] = repeat_hit
         entry["prefix_hit"] = prefix_hit
         entry["hit"] = repeat_hit > 0
+        retry_pr = _cached(entry["prefix_reuse_retry"].get("cached_tokens"))
+        entry["prefix_reuse_retry_cached"] = retry_pr
+        entry["prefix_reuse_retry_hit"] = retry_pr > 0
         entry["cache_type"] = classify_cache(same, pr, bl, repeat_hit, prefix_hit)
         entry["cached_trusted"] = entry["cache_type"] != "字段不可信"
+        # 缓存确实生效但「换问题后首次 miss、同请求体复测命中」→ 网关按请求体指纹路由到不同上游节点
+        if entry["hit"] and not prefix_hit and entry["prefix_reuse_retry_hit"]:
+            entry["routing_note"] = ("同 prompt 连打命中、换问题首次 miss、同请求体复测命中 → 缓存有效，"
+                                     "但网关按请求体/节点路由，节点间不共享缓存；换问题后需重新预热")
+        elif entry["hit"] and not prefix_hit:
+            entry["routing_note"] = "同 prompt 命中但前缀复用 miss：疑似上游缓存按完整请求或节点隔离"
         # 诊断：渠道确实返回了缓存字段、但值全 0 → 说明是「请求没触发缓存」而非「字段没透传」
         if entry["cache_field_seen"] and not entry["hit"]:
             if anthropic_native and cache_control:
@@ -1642,6 +1679,10 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False, anthropi
                 "  · %s：usage 里出现缓存字段 %s，但值全为 0 → %s"
                 % (r.get("name") or "%s@%s" % (r.get("model_id"), r.get("channel_name")),
                    ", ".join(fields[:6]), r.get("diagnosis") or "请求方式未触发缓存"))
+    for r in rows:
+        if r.get("routing_note"):
+            diag_lines.append(
+                "  · %s：%s" % ("%s@%s" % (r.get("model_id"), r.get("channel_name")), r.get("routing_note")))
     if diag_lines:
         print("\n缓存诊断：")
         print("\n".join(diag_lines))
@@ -1703,8 +1744,8 @@ def build_cache_report(out_dir):
                 "是" if s.get("cache_control") else "否",
                 (s.get("environment") or {}).get("env_tag", ""), (s.get("environment") or {}).get("hostname", "")),
              "",
-             "| 模型 | 渠道 | 首写tokens | 重复命中 | cached(2~N) | 前缀cached | 基线cached | 前缀复用 | session | 缓存字段 | 缓存类型 |",
-             "|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| 模型 | 渠道 | 首写tokens | 重复命中 | cached(2~N) | 前缀cached | 复用复测 | 基线cached | 前缀复用 | session | 缓存字段 | 缓存类型 |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for row in rows:
         sp = row.get("same_prompt") or []
         hit_vals = [sp[i].get("cached_tokens") or 0 for i in range(1, len(sp))]
@@ -1712,11 +1753,12 @@ def build_cache_report(out_dir):
         uniq = sorted(set(hit_vals))
         cached_disp = uniq[0] if len(uniq) == 1 else " / ".join(str(v) for v in hit_vals)
         sess = row.get("session_id_supported")
-        lines.append("| %s | %s | %s | %d/%d | %s | %s | %s | %s | %s | %s | %s |" % (
+        lines.append("| %s | %s | %s | %d/%d | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             row.get("model_id"), row.get("channel_name"),
             "-" if row.get("cache_write_tokens") is None else row.get("cache_write_tokens"),
             repeat_hits, runs_minus_1, cached_disp,
             (row.get("prefix_reuse") or {}).get("cached_tokens") or 0,
+            (row.get("prefix_reuse_retry") or {}).get("cached_tokens") or 0,
             (row.get("baseline") or {}).get("cached_tokens") or 0,
             "是" if row.get("prefix_hit") else "否",
             "是" if sess is True else ("否" if sess is False else "未验证"),
@@ -1725,11 +1767,15 @@ def build_cache_report(out_dir):
     lines += ["", "## 判定口径", "",
               "- `重复命中` = same_prompt run2~N 中 cached_tokens>0 的次数 / %d" % runs_minus_1,
               "- `前缀复用` = 同 session 同前缀换问题后 cached_tokens>0 且大于基线",
-              "- `session` = 该渠道是否接受 `session_id`（否 = 自动去 session 重试）",
+              "- `复用复测` = 同前缀 + 同新问题再发一次（首次 miss 但复测命中 → 缓存有效，是网关按请求体路由到不同节点）",
+              "- `session` = 该渠道是否接受 `session_id`（否 = 自动去 session 重试；原生协议不适用）",
               "- `缓存字段` = 渠道 usage 是否真的返回 cached/cache_read 字段；**未透传**时「无缓存」只能说明没测到，不能证明模型无缓存能力",
               "- 本次是否给长前缀打了 `cache_control` 断点：**%s**（Anthropic 系模型必须显式标记才会建缓存）"
               % ("是（--cache-control）" if s.get("cache_control") else "否"),
               ""]
+    notes = [r.get("routing_note") for r in rows if r.get("routing_note")]
+    if notes:
+        lines += ["## 路由/节点注记", ""] + ["- %s" % n for n in notes] + [""]
     md_path = os.path.join(out_dir, "cache_table.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -1963,7 +2009,7 @@ def main():
     if not (args.cache or args.cache_only):
         print("\n[提示] 本次未启用缓存专项：report.xlsx 里不会有「缓存命中」sheet。"
               "\n       需要 cached_tokens / 前缀复用 / 缓存类型结论时，请追加 --cache（与常规用例一起跑）"
-              "\n       或 --cache-only（只跑缓存，约 %d 次请求/组合，单独生成 cache_report.xlsx）。" % (CACHE_RUNS + 2))
+              "\n       或 --cache-only（只跑缓存，约 %d 次请求/组合，单独生成 cache_report.xlsx）。" % (CACHE_RUNS + 3))
 
     # 自动生成 Excel 报告（与 export_report.py 同一套逻辑）
     try:
