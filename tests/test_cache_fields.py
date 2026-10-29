@@ -40,6 +40,48 @@ class ExtractUsageTest(unittest.TestCase):
         self.assertIsNone(u["cached_tokens"])
 
 
+class EasyRouterUsageTest(unittest.TestCase):
+    """easyrouter 实际返回的 anthropic 语义 usage（2026-10-29 抓取）：缓存读写分别为 0。
+    这类网关把 cached 读放进 prompt_tokens_details.cached_tokens，
+    把 cache_creation 拆成 claude_cache_creation_{5m,1h}_tokens。"""
+
+    USAGE = {
+        "prompt_tokens": 3063, "completion_tokens": 104, "total_tokens": 3167,
+        "usage_semantic": "openai", "usage_source": "anthropic",
+        "prompt_tokens_details": {"cached_tokens": 0, "text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
+        "completion_tokens_details": {"reasoning_tokens": 0},
+        "input_tokens": 3063, "output_tokens": 0, "input_tokens_details": None,
+        "claude_cache_creation_5_m_tokens": 0, "claude_cache_creation_1_h_tokens": 0,
+    }
+
+    def test_zero_is_not_none(self):
+        u = runner.extract_usage_fields(self.USAGE)
+        self.assertEqual(u["cached_tokens"], 0)
+        self.assertEqual(u["cache_write_tokens"], 0)
+        self.assertEqual(u["prompt_tokens"], 3063)
+
+    def test_claude_creation_buckets_summed(self):
+        usage = dict(self.USAGE, claude_cache_creation_5_m_tokens=1500,
+                     claude_cache_creation_1_h_tokens=100)
+        u = runner.extract_usage_fields(usage)
+        self.assertEqual(u["cache_write_tokens"], 1600)
+        self.assertEqual(u["cached_tokens"], 0)
+
+    def test_real_read_field_beats_stale_zero_field(self):
+        # 网关可能同时给 OpenAI 字段 0 和 Anthropic 真实读值 → 取 max，避免漏判命中
+        usage = dict(self.USAGE)
+        usage["prompt_tokens_details"] = {"cached_tokens": 0}
+        usage["cache_read_input_tokens"] = 1792
+        u = runner.extract_usage_fields(usage)
+        self.assertEqual(u["cached_tokens"], 1792)
+
+    def test_cache_field_paths(self):
+        paths = runner.cache_field_paths(self.USAGE)
+        self.assertIn("prompt_tokens_details.cached_tokens", paths)
+        self.assertIn("claude_cache_creation_5_m_tokens", paths)
+        self.assertIn("claude_cache_creation_1_h_tokens", paths)
+
+
 class CacheFieldSeenTest(unittest.TestCase):
     def test_detects_nested(self):
         self.assertTrue(runner.usage_cache_field_seen(

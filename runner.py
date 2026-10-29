@@ -259,8 +259,47 @@ class ApiError(Exception):
         self.retry_after = retry_after
 
 
+def scan_numeric_fields(usage, needles):
+    """递归扫描 usage，返回 [(字段路径, 数值)]，字段名小写后包含任一 needle。
+
+    用于兜底识别网关自定义的缓存字段（如 claude_cache_creation_5_m_tokens）。
+    """
+    found = []
+    stack = [(usage, "")]
+    while stack:
+        cur, path = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                p = "%s.%s" % (path, k) if path else k
+                if isinstance(v, bool):
+                    continue
+                if isinstance(v, (int, float)) and any(n in k.lower() for n in needles):
+                    found.append((p, v))
+                elif isinstance(v, (dict, list)):
+                    stack.append((v, p))
+        elif isinstance(cur, list):
+            for item in cur:
+                if isinstance(item, (dict, list)):
+                    stack.append((item, path + "[]"))
+    return found
+
+
+def cache_field_paths(usage):
+    """返回 usage 里所有缓存相关字段路径（用于诊断「渠道到底给了什么」）。"""
+    if not isinstance(usage, dict):
+        return []
+    return sorted({p for p, _ in scan_numeric_fields(
+        usage, ("cache", "cached", "cache_read", "cache_creation", "cache_hit", "cache_write"))})
+
+
 def extract_usage_fields(usage):
-    """统一抽取 usage 相关字段，兼容不同渠道的字段位置差异。"""
+    """统一抽取 usage 相关字段，兼容不同渠道的字段位置差异。
+
+    读缓存按「取最大候选值」处理：网关可能同时返回一个恒 0 的 OpenAI 字段
+    和一个真实的 Anthropic 字段（如 prompt_tokens_details.cached_tokens=0 但
+    cache_read_input_tokens=1792），取 max 才不会漏判。
+    写缓存：优先单字段；若网关把 cache_creation 拆成 5m/1h 两个桶则求和。
+    """
     out = {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
            "reasoning_tokens": None, "cached_tokens": None, "cache_write_tokens": None}
     if not usage:
@@ -272,27 +311,25 @@ def extract_usage_fields(usage):
     out["reasoning_tokens"] = ctd.get("reasoning_tokens")
     if out["reasoning_tokens"] is None:
         out["reasoning_tokens"] = usage.get("reasoning_tokens")  # 部分渠道放 usage 顶层
+
     ptd = usage.get("prompt_tokens_details") or {}
     itd = usage.get("input_tokens_details") or {}  # 部分网关用 input_ 命名
-    out["cached_tokens"] = ptd.get("cached_tokens")
-    if out["cached_tokens"] is None:
-        out["cached_tokens"] = itd.get("cached_tokens")
-    if out["cached_tokens"] is None:
-        out["cached_tokens"] = usage.get("cached_tokens")
-    if out["cached_tokens"] is None:
-        # Anthropic 原生命名：cache_read_input_tokens（读缓存）
-        out["cached_tokens"] = usage.get("cache_read_input_tokens")
-    if out["cached_tokens"] is None:
-        # Gemini 原生命名
-        out["cached_tokens"] = usage.get("cachedContentTokenCount")
-    out["cache_write_tokens"] = ptd.get("cache_write_tokens")
-    if out["cache_write_tokens"] is None:
-        out["cache_write_tokens"] = itd.get("cache_write_tokens")
-    if out["cache_write_tokens"] is None:
-        out["cache_write_tokens"] = usage.get("cache_write_tokens")
-    if out["cache_write_tokens"] is None:
-        # Anthropic 原生命名：cache_creation_input_tokens（写缓存）
-        out["cache_write_tokens"] = usage.get("cache_creation_input_tokens")
+    read_vals = [v for v in (ptd.get("cached_tokens"), itd.get("cached_tokens"), usage.get("cached_tokens"),
+                             usage.get("cache_read_input_tokens"), usage.get("cachedContentTokenCount"),
+                             usage.get("prompt_cache_hit_tokens")) if v is not None]
+    read_vals += [v for _, v in scan_numeric_fields(
+        usage, ("cache_read", "cachedcontent", "cache_hit", "cached_tokens"))]
+    out["cached_tokens"] = max(read_vals) if read_vals else None
+
+    write_vals = [v for v in (ptd.get("cache_write_tokens"), itd.get("cache_write_tokens"),
+                              usage.get("cache_write_tokens"), usage.get("cache_creation_input_tokens"))
+                  if v is not None]
+    if write_vals:
+        out["cache_write_tokens"] = max(write_vals)
+    else:
+        # Anthropic 网关常把 cache_creation 拆成 5 分钟 / 1 小时两个 TTL 桶 → 求和
+        ttl = [v for _, v in scan_numeric_fields(usage, ("cache_creation", "cache_write"))]
+        out["cache_write_tokens"] = sum(ttl) if ttl else None
     return out
 
 
@@ -1394,31 +1431,51 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
         session_shared = base_session + "_shared"
         session_baseline = base_session + "_baseline"
         session_supported = None  # None=未探测 / True=支持 / False=不支持(自动 fallback)
+        cache_control_supported = None  # None=未探测 / True=接受 cache_control / False=被拒(自动降级)
 
         def call(p, prefix, question, session_id=None):
-            nonlocal session_supported
-            case = {"id": "cache_tmp", "prompt": prefix + "\n\n" + question, "stream": True, "max_tokens": 512}
-            body = build_request_body(p, case, cfg.get("shared_request_params", {}), cfg.get("reasoning_max_tokens", 16384))
-            if cache_control:
-                attach_cache_control(body, prefix, question)  # Anthropic 系必须显式标记断点
+            nonlocal session_supported, cache_control_supported
             url = p["base_url"].rstrip("/") + "/chat/completions"
             headers = {"Authorization": "Bearer " + resolve_api_key(p), "Content-Type": "application/json"}
-            if session_id and session_supported is not False:
-                body["session_id"] = session_id
-            try:
-                r = run_stream(url, headers, body, timeout)
-                if session_id and session_supported is None:
-                    session_supported = True  # 带 session 请求成功 → 支持
-                return r
-            except ApiError as e:
-                if session_id and session_supported is None and e.http_status in (400, 422):
-                    session_supported = False  # session_id 不被支持，fallback 重试
-                    body.pop("session_id", None)
-                    try:
-                        return run_stream(url, headers, body, timeout)
-                    except ApiError as e2:
-                        return {"error": {"type": e2.kind, "message": str(e2)[:200]}}
-                return {"error": {"type": e.kind, "message": str(e)[:200]}}
+            want_session = bool(session_id) and session_supported is not False
+            use_cc = bool(cache_control) and cache_control_supported is not False
+
+            def build(with_cc, with_session):
+                case = {"id": "cache_tmp", "prompt": prefix + "\n\n" + question, "stream": True, "max_tokens": 512}
+                b = build_request_body(p, case, cfg.get("shared_request_params", {}),
+                                       cfg.get("reasoning_max_tokens", 16384))
+                if with_cc:
+                    attach_cache_control(b, prefix, question)  # Anthropic 系必须显式标记断点
+                if with_session and session_id:
+                    b["session_id"] = session_id
+                return b
+
+            last_err = None
+            for _ in range(3):
+                body = build(use_cc, want_session)
+                try:
+                    r = run_stream(url, headers, body, timeout)
+                    if want_session:
+                        session_supported = True   # 带 session 请求成功 → 支持
+                    if use_cc:
+                        cache_control_supported = True  # 网关接受 content block + cache_control
+                    return r
+                except ApiError as e:
+                    last_err = e
+                    if e.http_status not in (400, 422):
+                        return {"error": {"type": e.kind, "message": str(e)[:200]}}
+                    # 400/422 可能是 session_id 或 cache_control 不被接受，逐项降级重试
+                    if want_session and session_supported is None:
+                        session_supported = False
+                        want_session = False
+                        continue
+                    if use_cc and cache_control_supported is None:
+                        cache_control_supported = False
+                        use_cc = False
+                        continue
+                    return {"error": {"type": e.kind, "message": str(e)[:200]}}
+            return {"error": {"type": last_err.kind if last_err else "api_error",
+                              "message": str(last_err)[:200] if last_err else "请求失败"}}
 
         # 用例1：相同 prompt 连打（run1 建立缓存，run2~N 测命中）
         same = []
@@ -1429,7 +1486,8 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
             same.append({"run": i + 1, "ttft_ms": m.get("ttft_ms"), "e2e_ms": m.get("e2e_ms"),
                          "cached_tokens": m.get("cached_tokens"), "cache_write_tokens": m.get("cache_write_tokens"),
                          "prompt_tokens": m.get("prompt_tokens"), "error": r.get("error"),
-                         "cache_field_seen": usage_cache_field_seen(usage), "usage": usage})
+                         "cache_field_seen": usage_cache_field_seen(usage),
+                         "cache_fields": cache_field_paths(usage), "usage": usage})
             time.sleep(1)
         entry["same_prompt"] = same
         # 用例2：前缀复用（同 session、同前缀、换问题）
@@ -1438,14 +1496,16 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
         usage2 = r2.get("usage")
         entry["prefix_reuse"] = {"cached_tokens": m2.get("cached_tokens"), "cache_write_tokens": m2.get("cache_write_tokens"),
                                  "prompt_tokens": m2.get("prompt_tokens"), "ttft_ms": m2.get("ttft_ms"), "error": r2.get("error"),
-                                 "cache_field_seen": usage_cache_field_seen(usage2), "usage": usage2}
+                                 "cache_field_seen": usage_cache_field_seen(usage2),
+                                 "cache_fields": cache_field_paths(usage2), "usage": usage2}
         # 用例3：基线（独立 session、不同前缀，应不命中）
         r3 = call(p, prefix_b, q1, session_baseline)
         m3 = (r3.get("metrics") or {}) if not r3.get("error") else {}
         usage3 = r3.get("usage")
         entry["baseline"] = {"cached_tokens": m3.get("cached_tokens"), "cache_write_tokens": m3.get("cache_write_tokens"),
                              "prompt_tokens": m3.get("prompt_tokens"), "ttft_ms": m3.get("ttft_ms"), "error": r3.get("error"),
-                             "cache_field_seen": usage_cache_field_seen(usage3), "usage": usage3}
+                             "cache_field_seen": usage_cache_field_seen(usage3),
+                             "cache_fields": cache_field_paths(usage3), "usage": usage3}
         # —— 指标判定：null→0 归一化后拆分 repeat_hit / prefix_hit ——
         hit_vals = [_cached(s.get("cached_tokens")) for s in same[1:]]  # run2~N 的命中值
         repeat_hits = sum(1 for c in hit_vals if c > 0)
@@ -1455,14 +1515,23 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
         prefix_hit = pr > 0 and pr > bl                     # 增量命中：>0 且 > 基线
         entry["session_id_supported"] = session_supported   # 待验证项：EasyRouter 是否支持 session_id
         entry["cache_control"] = bool(cache_control)
+        entry["cache_control_supported"] = cache_control_supported
         entry["cache_field_seen"] = any(
             x.get("cache_field_seen") for x in (same + [entry["prefix_reuse"], entry["baseline"]]))
+        _fields = set()
+        for _x in same + [entry["prefix_reuse"], entry["baseline"]]:
+            _fields.update(_x.get("cache_fields") or [])
+        entry["cache_fields_present"] = sorted(_fields)
         entry["cache_write_tokens"] = same[0].get("cache_write_tokens") if same else None  # run1 首次写入
         entry["repeat_hit"] = repeat_hit
         entry["prefix_hit"] = prefix_hit
         entry["hit"] = repeat_hit > 0
         entry["cache_type"] = classify_cache(same, pr, bl, repeat_hit, prefix_hit)
         entry["cached_trusted"] = entry["cache_type"] != "字段不可信"
+        # 诊断：渠道确实返回了缓存字段、但值全 0 → 大概率是请求方式没触发缓存（如没打 cache_control）
+        if entry["cache_field_seen"] and not entry["hit"]:
+            entry["diagnosis"] = ("渠道透传了缓存字段但全为 0：先用 --cache-control 打 Anthropic 断点重测；"
+                                  "若已启用仍为 0，则渠道未实现缓存")
         rows.append(entry)
         layer_dir = os.path.join(out_dir, "raw", "cache")
         os.makedirs(layer_dir, exist_ok=True)
@@ -1473,9 +1542,22 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
                        "environment": env, "cache_result": entry}, f, ensure_ascii=False, indent=2)
 
     render_cache_table(rows)
+    diag_lines = []
+    for r in rows:
+        fields = r.get("cache_fields_present") or []
+        if fields and not r.get("hit"):
+            diag_lines.append(
+                "  · %s：usage 里出现缓存字段 %s，但值全为 0 → %s"
+                % (r.get("name") or "%s@%s" % (r.get("model_id"), r.get("channel_name")),
+                   ", ".join(fields[:6]), r.get("diagnosis") or "请求方式未触发缓存"))
+    if diag_lines:
+        print("\n缓存诊断：")
+        print("\n".join(diag_lines))
     summary = {
         "mode": "cache", "prefix_tokens": CACHE_PREFIX_TOKENS, "runs": CACHE_RUNS,
         "cache_control": bool(cache_control),
+        "cache_control_effective": (bool(cache_control) and all(
+            r.get("cache_control_supported") is not False for r in rows)) if rows else bool(cache_control),
         "null_normalized": True,
         "session_design": "连打+前缀复用共用 session（{渠道}_{模型}_cache_shared），基线独立 session；不支持 session_id 时自动 fallback",
         "metrics": {
