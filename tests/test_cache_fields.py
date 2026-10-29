@@ -9,6 +9,40 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import runner  # noqa: E402
 
 
+class AnthropicNativeTest(unittest.TestCase):
+    def test_build_body_with_breakpoint(self):
+        b = runner.build_anthropic_message_body("claude-opus-5-5", "P" * 2000, "问题", 512)
+        self.assertEqual(b["model"], "claude-opus-5-5")
+        blocks = b["messages"][0]["content"]
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[0]["cache_control"], {"type": "ephemeral"})
+        self.assertNotIn("cache_control", blocks[1])
+        self.assertEqual(blocks[1]["text"], "问题")
+        self.assertEqual(b["max_tokens"], 512)
+
+    def test_build_body_without_breakpoint(self):
+        b = runner.build_anthropic_message_body("m", "P", "q", cache_control=False)
+        self.assertNotIn("cache_control", b["messages"][0]["content"][0])
+
+    def test_parse_usage_plain_fields(self):
+        u = runner.parse_anthropic_usage({"input_tokens": 3062, "output_tokens": 20,
+                                          "cache_creation_input_tokens": 2000,
+                                          "cache_read_input_tokens": 0})
+        self.assertEqual(u["prompt_tokens"], 3062)
+        self.assertEqual(u["cache_write_tokens"], 2000)
+        self.assertEqual(u["cached_tokens"], 0)
+
+    def test_parse_usage_ttl_buckets(self):
+        u = runner.parse_anthropic_usage({"input_tokens": 3000, "output_tokens": 5,
+                                          "cache_creation": {"ephemeral_5m_input_tokens": 1800,
+                                                             "ephemeral_1h_input_tokens": 200}})
+        self.assertEqual(u["cache_write_tokens"], 2000)
+        self.assertIsNone(u["cached_tokens"])
+
+    def test_parse_usage_empty(self):
+        self.assertIsNone(runner.parse_anthropic_usage(None)["cached_tokens"])
+
+
 class ExtractUsageTest(unittest.TestCase):
     def test_openai_style(self):
         u = runner.extract_usage_fields({

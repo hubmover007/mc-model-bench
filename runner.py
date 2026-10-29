@@ -1397,7 +1397,10 @@ def render_cache_table(rows):
         repeat_hits = sum(1 for c in hit_vals if c > 0)
         repeat_disp = "%d/%d" % (repeat_hits, CACHE_RUNS - 1)
         sess = r.get("session_id_supported")
-        sess_disp = "是" if sess is True else ("否" if sess is False else "未验证")
+        if r.get("anthropic_native"):
+            sess_disp = "不适用"
+        else:
+            sess_disp = "是" if sess is True else ("否" if sess is False else "未验证")
         field_disp = "透传" if r.get("cache_field_seen") else "未透传"
         print("%-14s %-9s %-9s %-9s %-14s %-11s %-11s %-9s %-9s %-9s %s" % (
             r.get("model_id"), r.get("channel_name"), write_disp, repeat_disp, cached_disp,
@@ -1408,9 +1411,79 @@ def render_cache_table(rows):
           "缓存字段=渠道 usage 里是否真的返回 cached/cache_read 字段(未透传 → 无法判定缓存能力)。\n" % (CACHE_RUNS, CACHE_RUNS - 1))
 
 
-def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
+ANTHROPIC_VERSION = "2023-06-01"
+
+
+def build_anthropic_message_body(model, prefix, question, max_tokens=512, cache_control=True):
+    """构造 Anthropic Messages 原生请求体（/v1/messages）。
+
+    与 OpenAI 兼容层最大的区别：prompt 用 content block 数组，长前缀上可直接打
+    `cache_control: {"type": "ephemeral"}`，这是 Anthropic 建缓存的唯一方式。
+    """
+    prefix_block = {"type": "text", "text": prefix}
+    if cache_control:
+        prefix_block["cache_control"] = {"type": "ephemeral"}
+    return {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": [prefix_block, {"type": "text", "text": question}]}],
+    }
+
+
+def parse_anthropic_usage(usage):
+    """解析 Anthropic 原生 usage 里的缓存字段（读/写/输入输出 token）。"""
+    usage = usage or {}
+    read = usage.get("cache_read_input_tokens")
+    write = usage.get("cache_creation_input_tokens")
+    if write is None:
+        cc = usage.get("cache_creation") or {}
+        vals = [v for v in cc.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if vals:
+            write = sum(vals)
+    return {
+        "prompt_tokens": usage.get("input_tokens"),
+        "completion_tokens": usage.get("output_tokens"),
+        "cached_tokens": read,
+        "cache_write_tokens": write,
+    }
+
+
+def call_anthropic_native(p, prefix, question, timeout, cache_control=True, max_tokens=512):
+    """走 Anthropic 原生 /messages 发一次请求，返回 {metrics, usage, request_body} 或 {error}。
+
+    用途：OpenAI 兼容层可能吞掉 content block 里的 cache_control，导致「打了断点也不建缓存」；
+    原生协议可以验证断点本身是否生效（看 cache_creation_input_tokens / cache_read_input_tokens）。
+    """
+    url = p["base_url"].rstrip("/") + "/messages"
+    body = build_anthropic_message_body(p["model"], prefix, question, max_tokens, cache_control)
+    headers = {"x-api-key": resolve_api_key(p), "anthropic-version": ANTHROPIC_VERSION,
+               "Content-Type": "application/json"}
+    started = time.monotonic()
+    try:
+        resp = requests.post(url, headers=headers, json=body, timeout=timeout)
+    except requests.RequestException as e:
+        return {"error": {"type": "network", "message": str(e)[:200]}}
+    e2e_ms = (time.monotonic() - started) * 1000.0
+    if resp.status_code != 200:
+        return {"error": {"type": "http_%d" % resp.status_code, "message": " ".join(resp.text[:200].split())}}
+    try:
+        data = resp.json()
+    except ValueError:
+        return {"error": {"type": "bad_json", "message": resp.text[:200]}}
+    u = parse_anthropic_usage(data.get("usage"))
+    metrics = {"cached_tokens": u["cached_tokens"], "cache_write_tokens": u["cache_write_tokens"],
+               "prompt_tokens": u["prompt_tokens"], "completion_tokens": u["completion_tokens"],
+               "ttft_ms": None, "e2e_ms": round(e2e_ms, 1)}
+    return {"metrics": metrics, "usage": data.get("usage"), "request_body": body}
+
+
+def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False, anthropic_native=False):
     print("[缓存测试] 每个「模型×渠道」组合：长前缀连打 %d 次(run1 建缓存, run2~%d 测命中) + 前缀复用 + 基线，共 %d 个组合" % (
         CACHE_RUNS, CACHE_RUNS, len(providers)))
+    if anthropic_native:
+        print("[缓存测试] 协议：Anthropic 原生 /messages（可真正验证 cache_control 断点是否生效）")
+    else:
+        print("[缓存测试] 协议：OpenAI 兼容 /chat/completions（cache_control 可能被网关忽略）")
     if cache_control:
         print("[缓存测试] 已启用 --cache-control：长前缀会以 content block + cache_control(ephemeral) 发送"
               "（Anthropic 系必须显式标记才会建缓存）")
@@ -1435,6 +1508,13 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
 
         def call(p, prefix, question, session_id=None):
             nonlocal session_supported, cache_control_supported
+            if anthropic_native:
+                # 原生协议：session_id 无意义，直接按 Anthropic Messages 规范发
+                r = call_anthropic_native(p, prefix, question, timeout,
+                                          cache_control=bool(cache_control))
+                if r.get("metrics") is not None:
+                    cache_control_supported = bool(cache_control)
+                return r
             url = p["base_url"].rstrip("/") + "/chat/completions"
             headers = {"Authorization": "Bearer " + resolve_api_key(p), "Content-Type": "application/json"}
             want_session = bool(session_id) and session_supported is not False
@@ -1459,6 +1539,7 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
                         session_supported = True   # 带 session 请求成功 → 支持
                     if use_cc:
                         cache_control_supported = True  # 网关接受 content block + cache_control
+                    r.setdefault("request_body", body)  # 留证：实际发出的请求体（用于排查网关是否吞了断点）
                     return r
                 except ApiError as e:
                     last_err = e
@@ -1487,7 +1568,8 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
                          "cached_tokens": m.get("cached_tokens"), "cache_write_tokens": m.get("cache_write_tokens"),
                          "prompt_tokens": m.get("prompt_tokens"), "error": r.get("error"),
                          "cache_field_seen": usage_cache_field_seen(usage),
-                         "cache_fields": cache_field_paths(usage), "usage": usage})
+                         "cache_fields": cache_field_paths(usage), "usage": usage,
+                         "request_body": r.get("request_body") if i == 0 else None})
             time.sleep(1)
         entry["same_prompt"] = same
         # 用例2：前缀复用（同 session、同前缀、换问题）
@@ -1514,6 +1596,8 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
         bl = _cached(entry["baseline"].get("cached_tokens"))
         prefix_hit = pr > 0 and pr > bl                     # 增量命中：>0 且 > 基线
         entry["session_id_supported"] = session_supported   # 待验证项：EasyRouter 是否支持 session_id
+        entry["anthropic_native"] = bool(anthropic_native)
+        entry["protocol"] = "anthropic_messages" if anthropic_native else "openai_chat_completions"
         entry["cache_control"] = bool(cache_control)
         entry["cache_control_supported"] = cache_control_supported
         entry["cache_field_seen"] = any(
@@ -1528,10 +1612,18 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
         entry["hit"] = repeat_hit > 0
         entry["cache_type"] = classify_cache(same, pr, bl, repeat_hit, prefix_hit)
         entry["cached_trusted"] = entry["cache_type"] != "字段不可信"
-        # 诊断：渠道确实返回了缓存字段、但值全 0 → 大概率是请求方式没触发缓存（如没打 cache_control）
+        # 诊断：渠道确实返回了缓存字段、但值全 0 → 说明是「请求没触发缓存」而非「字段没透传」
         if entry["cache_field_seen"] and not entry["hit"]:
-            entry["diagnosis"] = ("渠道透传了缓存字段但全为 0：先用 --cache-control 打 Anthropic 断点重测；"
-                                  "若已启用仍为 0，则渠道未实现缓存")
+            if anthropic_native and cache_control:
+                entry["diagnosis"] = ("原生 /messages 已打 cache_control 断点仍全 0："
+                                      "上游未启用缓存 / 该模型不支持 prompt caching / 中转层有缓存剥离")
+            elif anthropic_native:
+                entry["diagnosis"] = "原生 /messages 但未打断点：Anthropic 不会自动缓存，请加 --cache-control"
+            elif cache_control:
+                entry["diagnosis"] = ("OpenAI 兼容层接受了 cache_control 但上游返回全 0："
+                                      "网关很可能丢弃了断点，建议用 --anthropic-native 走 /messages 验证")
+            else:
+                entry["diagnosis"] = "未打 cache_control 断点：Anthropic 不会建缓存，请加 --cache-control 重测"
         rows.append(entry)
         layer_dir = os.path.join(out_dir, "raw", "cache")
         os.makedirs(layer_dir, exist_ok=True)
@@ -1556,6 +1648,8 @@ def run_cache(providers, cfg, out_dir, env_tag="", cache_control=False):
     summary = {
         "mode": "cache", "prefix_tokens": CACHE_PREFIX_TOKENS, "runs": CACHE_RUNS,
         "cache_control": bool(cache_control),
+        "anthropic_native": bool(anthropic_native),
+        "protocol": "anthropic_messages(/messages)" if anthropic_native else "openai_chat_completions(/chat/completions)",
         "cache_control_effective": (bool(cache_control) and all(
             r.get("cache_control_supported") is not False for r in rows)) if rows else bool(cache_control),
         "null_normalized": True,
@@ -1603,8 +1697,10 @@ def build_cache_report(out_dir):
     runs = int(s.get("runs", 5))
     runs_minus_1 = runs - 1
     lines = ["# 缓存命中专项报告", "",
-             "> 前缀 %d token ｜ 连打 %d 次（run1 建缓存，run2~%d 测命中）｜ 环境标注：%s ｜ 主机：%s"
+             "> 前缀 %d token ｜ 连打 %d 次（run1 建缓存，run2~%d 测命中）｜ 协议：%s ｜ cache_control：%s ｜ 环境标注：%s ｜ 主机：%s"
              % (s.get("prefix_tokens", 0), runs, runs,
+                s.get("protocol", "openai_chat_completions"),
+                "是" if s.get("cache_control") else "否",
                 (s.get("environment") or {}).get("env_tag", ""), (s.get("environment") or {}).get("hostname", "")),
              "",
              "| 模型 | 渠道 | 首写tokens | 重复命中 | cached(2~N) | 前缀cached | 基线cached | 前缀复用 | session | 缓存字段 | 缓存类型 |",
@@ -1665,6 +1761,7 @@ def main():
     ap.add_argument("--cache", action="store_true", help="缓存命中专项测试（长前缀连打 + 前缀复用 + 基线），先跑缓存再跑常规用例，合并进同一份 report.xlsx")
     ap.add_argument("--cache-only", action="store_true", help="只跑缓存专项、不跑 20 条常规用例，单独生成 cache_report.xlsx / cache_table.md")
     ap.add_argument("--cache-control", action="store_true", help="缓存专项给长前缀打 Anthropic 风格 cache_control 断点（Anthropic 系模型必须显式标记才建缓存）")
+    ap.add_argument("--anthropic-native", action="store_true", help="缓存专项走 Anthropic 原生 /messages 协议（验证断点是否真的生效）")
     ap.add_argument("--parallel", action="store_true", help="渠道级并行：每个「模型×渠道」组合串行，不同组合并行（会轻微影响性能数据精度）")
     ap.add_argument("--sample", action="store_true", help="示例模式：每个「模型×渠道」组合只跑 1 条示例")
     ap.add_argument("--once", action="store_true", help="单次模式：每条用例只跑 1 次、不做重试，快速预览结果")
@@ -1728,7 +1825,8 @@ def main():
 
     # 缓存命中专项测试（附加模式：先跑缓存，再继续常规测试，最终合并进同一份 report.xlsx）
     if (args.cache or args.cache_only) and not args.dry_run and not args.list_cases:
-        run_cache(providers, cfg, out_dir, args.env_tag, cache_control=args.cache_control)
+        run_cache(providers, cfg, out_dir, args.env_tag,
+                  cache_control=args.cache_control, anthropic_native=args.anthropic_native)
         if args.cache_only:
             build_cache_report(out_dir)
             print("\n[缓存专项] 已跳过常规用例（--cache-only）；如需完整报告请去掉该参数、改用 --cache。")

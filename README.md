@@ -93,18 +93,23 @@ python runner.py --providers-file config/providers.mock.json --out output_mock
 |---|---|---|
 | `python runner.py --cache` | 先跑缓存专项，再跑常规用例 | `report.xlsx` 多一个「缓存命中」sheet + `cache_summary.json` |
 | `python runner.py --cache-only` | 只跑缓存，跳过 20 条常规用例（省额度，新跑一个模型时推荐） | `cache_report.xlsx`（单 sheet）+ `cache_table.md` |
-| `python runner.py --cache-only --cache-control` | 同上，但长前缀以 content block + `cache_control: ephemeral` 发送 | 同上（表里 `cache_control` 列为「是」） |
+| `python runner.py --cache-only --cache-control` | 长前缀以 content block + `cache_control: ephemeral` 发送（走 OpenAI 兼容 `/chat/completions`） | 同上（表里 `cache_control` 列为「是」） |
+| `python runner.py --cache-only --cache-control --anthropic-native` | 同上，但走 **Anthropic 原生 `/messages`** 协议（easyrouter 支持），可真正验证断点是否生效 | 同上（协议列为「Anthropic 原生」） |
 
 判定出的五种缓存类型：`前缀缓存` / `精确匹配缓存(无前缀复用)` / `反常(连打miss但前缀命中)` / `字段不可信` / `无缓存`。
 表格里还有一列 **`缓存字段`**：渠道 usage 是否真的返回了 `cached_tokens` / `cache_read_input_tokens` / `cachedContentTokenCount`。
 
 ### 判定为「无缓存」时的三种可能（必须区分）
 
-| `缓存字段` | 原因 | 下一步 |
+| 现象 | 原因 | 下一步 |
 |---|---|---|
-| **未透传** | 渠道没返回任何缓存字段 → 测不到，不代表模型没有缓存能力 | 换直连官方 API，或换支持透传的渠道 |
-| 透传但恒 0 | 请求方式没触发缓存：**Anthropic 系必须显式打 `cache_control` 断点**，纯文本 prompt 永远 0 | 加 `--cache-control` 重测 |
-| 透传但恒 0（已打标记） | 该渠道确实没实现/没开启缓存 | 找渠道方确认，或换渠道 |
+| 缓存字段 **未透传** | 渠道没返回任何缓存字段 → 测不到，不代表模型没有缓存能力 | 换直连官方 API，或换支持透传的渠道 |
+| 透传但恒 0，且**没加** `--cache-control` | 请求方式没触发缓存：**Anthropic 系必须显式打 `cache_control` 断点**，纯文本 prompt 永远 0 | 加 `--cache-control` 重测 |
+| 透传但恒 0，**已加** `--cache-control`（兼容层） | 网关收了参数但可能丢弃了断点 | 加 `--anthropic-native` 走原生 `/messages` 复测 |
+| 透传但恒 0，**已加** `--cache-control --anthropic-native` | 原生也 0 → 上游未启用缓存 / 该模型不支持 prompt caching / 中转层剥离 | 找渠道方确认；用支持自动缓存的模型做阳性对照 |
+
+`cache_summary.json` 会保存 run1 的**实发请求体** `request_body`，可直接确认断点有没有发出去；
+`--cache-control` 若被网关 400/422 拒绝，会自动降级为纯文本重试并记 `cache_control_supported=false`。
 
 > 对照建议：同一条缓存测试跑一个**支持自动前缀缓存的模型**（如 OpenAI 系）作为阳性对照。
 > 它命中 → 说明测试链路没问题，问题在 claude/渠道；它也不命中 → 先查链路。

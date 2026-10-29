@@ -19,16 +19,61 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    _cache_seen = {}  # 前缀 hash -> 出现次数，用于模拟 Anthropic prompt caching（首次写、之后读）
+
     def do_POST(self):
-        if not self.path.rstrip("/").endswith("/chat/completions"):
-            self.send_error(404)
-            return
         length = int(self.headers.get("Content-Length") or 0)
-        body = json.loads(self.rfile.read(length) or b"{}")
-        if body.get("stream"):
-            self._stream(body)
+        raw = self.rfile.read(length) or b"{}"
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = {}
+        path = self.path.rstrip("/")
+        if path.endswith("/messages"):
+            self._anthropic(body)
+        elif path.endswith("/chat/completions"):
+            if body.get("stream"):
+                self._stream(body)
+            else:
+                self._json(body)
         else:
-            self._json(body)
+            self.send_error(404)
+
+    def _anthropic(self, body):
+        """模拟 Anthropic 原生 /messages：未见过的前缀返回 cache_creation，之后返回 cache_read。"""
+        msgs = body.get("messages") or []
+        blocks = (msgs[-1].get("content") if msgs else []) or []
+        if isinstance(blocks, str):
+            blocks = [{"type": "text", "text": blocks}]
+        marked = [b for b in blocks if isinstance(b, dict) and b.get("cache_control")]
+        prefix = marked[0].get("text", "") if marked else ""
+        question = ""
+        for b in reversed(blocks):
+            if isinstance(b, dict) and not b.get("cache_control"):
+                question = b.get("text", "")
+                break
+        key = hash(prefix) if marked else None
+        seen = self._cache_seen.get(key, 0)
+        self._cache_seen[key] = seen + 1
+        prompt_tokens = max(1, len(prefix) // 2 + len(question) // 2)
+        if marked and seen == 0:
+            usage = {"input_tokens": prompt_tokens, "output_tokens": 20,
+                     "cache_creation_input_tokens": prompt_tokens, "cache_read_input_tokens": 0}
+        elif marked:
+            usage = {"input_tokens": prompt_tokens, "output_tokens": 20,
+                     "cache_creation_input_tokens": 0, "cache_read_input_tokens": prompt_tokens}
+        else:
+            usage = {"input_tokens": prompt_tokens, "output_tokens": 20,
+                     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+        data = {"id": "msg_mock", "type": "message", "role": "assistant", "model": body.get("model"),
+                "content": [{"type": "text", "text": "这是 mock 的 Anthropic 回复。"}],
+                "stop_reason": "end_turn", "usage": usage}
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     @staticmethod
     def _text_of(content):

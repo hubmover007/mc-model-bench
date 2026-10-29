@@ -307,6 +307,8 @@ CACHE_METHOD = (
     "判据：cached=null 按 0(未命中)归一；重复命中=run2~5 命中次数/4；前缀复用=前缀cached>0 且 >基线；基线>0 → 字段不可信。"
     "缓存字段列=渠道 usage 是否真的返回 cached/cache_read 字段(未透传 → 「无缓存」只代表没测到，不能证明模型无缓存能力)。"
     "Anthropic 系模型需 --cache-control 显式打 cache_control 断点才会建缓存，未打标记的纯文本 prompt 必然 0。"
+    "若已打标记仍为 0，用 --anthropic-native 走原生 /messages 复测：仍为 0 说明上游未启用缓存，"
+    "原生命中而兼容层为 0 说明网关吞了断点。"
 )
 
 
@@ -346,8 +348,10 @@ def fill_cache_sheet(ws, s):
             ws.cell(row=r, column=c, value=v)
         r += 1
     env = s.get("environment") or {}
-    ws.cell(row=r + 1, column=1, value="前缀 %d token | 连打 %d 次 | cache_control：%s | 环境标注：%s | 主机：%s" % (
-        s.get("prefix_tokens", 0), s.get("runs", 0), "是" if s.get("cache_control") else "否",
+    ws.cell(row=r + 1, column=1, value="前缀 %d token | 连打 %d 次 | 协议：%s | cache_control：%s | 环境标注：%s | 主机：%s" % (
+        s.get("prefix_tokens", 0), s.get("runs", 0),
+        "Anthropic 原生 /messages" if s.get("anthropic_native") else "OpenAI 兼容 /chat/completions",
+        "是" if s.get("cache_control") else "否",
         env.get("env_tag", ""), env.get("hostname", "")))
     mcell = ws.cell(row=r + 3, column=1, value=CACHE_METHOD)
     mcell.alignment = Alignment(wrap_text=True, vertical="top")
